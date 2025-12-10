@@ -1,0 +1,17 @@
+{
+  "name": "dbbackuper",
+  "version": "0.0.1",
+  "description": "You can backup your database easily using this module",
+  "keywords": [
+    "database",
+    "backup",
+    "databasebackup"
+  ],
+  "license": "ISC",
+  "author": "Md Nasiruddin Ahmed",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
