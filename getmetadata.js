@@ -100,6 +100,7 @@ async function getmetadata(config, dbs = []) {
             }
         }
         // lets check if there is any reverse loop name or not
+        const raw = jsondata;
         for (const item of Object.keys(jsondata)) {
             for (const tables of Object.keys(jsondata[item])) {
                 const getreverseloop = fncs.reverseLoopName(tables);
@@ -115,7 +116,7 @@ async function getmetadata(config, dbs = []) {
             }
         }
         console.log(cstyler.green.bold("Successfully retrive database, table and column settings"));
-        return jsondata;
+        return {data: jsondata, raw: raw};
     } catch (err) {
         cstyler.error(err.message);
         return null;
