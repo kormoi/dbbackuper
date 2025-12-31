@@ -934,6 +934,48 @@ async function getDatabaseCharsetAndCollation(config, databaseName) {
     if (connection) await connection.end();
   }
 }
+async function getTableMetadata(config, databaseName, tableName) {
+  let connection;
+  try {
+    connection = await mysql.createConnection(config);
+
+    // Query information_schema.TABLES for metadata
+    // Note: TABLE_COLLATION contains the charset info (e.g., utf8mb4_general_ci)
+    const [rows] = await connection.execute(
+      `SELECT 
+        ENGINE as engine,
+        TABLE_COLLATION as collation,
+        TABLE_COMMENT as comment
+       FROM information_schema.TABLES 
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+      [databaseName, tableName]
+    );
+
+    if (rows.length === 0) {
+      console.error(`Table "${tableName}" not found in database "${databaseName}".`);
+      return null;
+    }
+
+    const data = rows[0];
+
+    // Extract Charset from Collation (MySQL collation always starts with the charset)
+    // Example: 'utf8mb4_unicode_ci' -> charset is 'utf8mb4'
+    const charset = data.collation ? data.collation.split('_')[0] : undefined;
+
+    return {
+      engine: data.engine,
+      charset: charset,
+      collation: data.collation,
+      // Return undefined if the comment is empty
+      comment: data.comment && data.comment.trim() !== "" ? data.comment : undefined,
+    };
+  } catch (err) {
+    console.error("Error fetching table metadata:", err.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
 async function getColumnDetails(config, dbName, tableName, columnName) {
   let connection;
   try {
@@ -1886,6 +1928,7 @@ module.exports = {
   getTableNames,
   getColumnNames,
   getDatabaseCharsetAndCollation,
+  getTableMetadata,
   getColumnDetails,
   inspectColumnConstraint,
   checkIndexExists,

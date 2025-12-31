@@ -2,8 +2,8 @@
   "name": "dbbackuper",
   "version": "0.0.1",
   "funding": {
-    "type": "patreon",
-    "url": "https://www.patreon.com/cw/kormoi"
+    "type": "individual",
+    "url": "https://www.patreon.com/cw/kormoi/membership"
   },
   "description": "You can backup your database easily using this module",
   "keywords": [
@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "cstyler": "^4.0.1",
-    "mysql2": "^3.16.0"
+    "fs": "^0.0.1-security",
+    "mysql2": "^3.16.0",
+    "path": "^0.12.7"
   }
 }
