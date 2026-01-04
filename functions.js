@@ -2003,7 +2003,7 @@ async function getAllRowsAccurately(config, databaseName, tableName) {
     if (connection) await connection.end();
   }
 }
-const addRecord = async (config, databaseName, tableName, validatedData) => {
+async function addRecord(config, databaseName, tableName, validatedData) {
   let pool;
   try {
     pool = await mysql.createConnection({
