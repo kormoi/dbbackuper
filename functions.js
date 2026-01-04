@@ -63,6 +63,9 @@ async function getMySQLVersion(config) {
     const version = rows[0].version;
     console.log("Mysql database version is: ", cstyler.green(version));
     return version;
+  } catch (err) {
+    console.error(err.message);
+    return null;
   } finally {
     await connection.end();
   }
@@ -82,8 +85,9 @@ async function isMySQL578OrAbove(config) {
   return patch >= 8;
 }
 async function getCharsetAndCollations(config) {
+  let conn;
   try {
-    const conn = await mysql.createConnection(config);
+    conn = await mysql.createConnection(config);
 
     const [charsetRows] = await conn.query("SHOW CHARACTER SET");
     const characterSets = charsetRows.map(row => row.Charset);
@@ -95,6 +99,8 @@ async function getCharsetAndCollations(config) {
     return { characterSets, collations };
   } catch (err) {
     return null;
+  } finally {
+    if (conn) await conn.end();
   }
 }
 async function isCharsetCollationValid(config, charset, collation) {
@@ -187,8 +193,9 @@ async function isMySQLDatabase(config) {
   }
 }
 async function checkDatabaseExists(config, dbName) {
+  let connection;
   try {
-    const connection = await mysql.createConnection({
+    connection = await mysql.createConnection({
       host: config.host,
       user: config.user,
       password: config.password,
@@ -202,6 +209,8 @@ async function checkDatabaseExists(config, dbName) {
   } catch (err) {
     console.error(err.message);
     return null;
+  } finally {
+    if (connection) await connection.end();
   }
 }
 async function dropDatabase(config, databaseName) {
@@ -783,6 +792,17 @@ function isSameArray(arr1, arr2) {
   if (arr1.length !== arr2.length) return false;
   for (let i = 0; i < arr1.length; i++) {
     if (!arr1.includes(arr2[i])) return false;
+  }
+  return true;
+}
+function hasArray(doesithave, amiin) {
+  if (!Array.isArray(doesithave) || !Array.isArray(amiin)) {
+    return null;
+  }
+  for (const item of amiin) {
+    if (!doesithave.includes(item)) {
+      return false;
+    }
   }
   return true;
 }
@@ -1895,6 +1915,119 @@ async function runQuery(config, databaseName, queryText) {
 }
 
 
+async function getTableRowCount(config, databaseName, tableName) {
+  let connection;
+  try {
+    connection = await mysql.createConnection(config);
+
+    // Using COUNT(*) for 100% accuracy
+    // We wrap identifiers in backticks to prevent errors with reserved words
+    const [rows] = await connection.execute(
+      `SELECT COUNT(*) AS totalRows FROM \`${databaseName}\`.\`${tableName}\``
+    );
+
+    return rows[0].totalRows;
+  } catch (err) {
+    console.error("Error fetching row count:", err.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
+async function getRequiredColumnNames(config, databaseName, tableName) {
+  let connection;
+  try {
+    connection = await mysql.createConnection(config);
+
+    // We look for columns where:
+    // 1. IS_NULLABLE is 'NO'
+    // 2. There is NO auto_increment (in EXTRA)
+    // 3. There is NO DEFAULT value
+    const [rows] = await connection.execute(
+      `SELECT COLUMN_NAME as columnName
+       FROM information_schema.COLUMNS 
+       WHERE TABLE_SCHEMA = ? 
+       AND TABLE_NAME = ? 
+       AND IS_NULLABLE = 'NO' 
+       AND EXTRA NOT LIKE '%auto_increment%'
+       AND COLUMN_DEFAULT IS NULL`,
+      [databaseName, tableName]
+    );
+
+    // Extract just the names into a flat array
+    return rows.map(row => row.columnName);
+  } catch (err) {
+    console.error("Error fetching required columns:", err.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
+async function getAllRowsAccurately(config, databaseName, tableName) {
+  let connection;
+  try {
+    connection = await mysql.createConnection(config);
+
+    // 1. Get the total number of rows first
+    const [countResult] = await connection.execute(
+      `SELECT COUNT(*) AS total FROM \`${databaseName}\`.\`${tableName}\``
+    );
+    const totalRows = countResult[0].total;
+
+    console.log(`Starting export: ${totalRows} rows found.`);
+
+    let allData = [];
+    const chunkSize = 5000;
+    let offset = 0;
+
+    // 2. Loop until the offset reaches the total count
+    while (offset < totalRows) {
+      const [rows] = await connection.execute(
+        `SELECT * FROM \`${databaseName}\`.\`${tableName}\` LIMIT ? OFFSET ?`,
+        [String(chunkSize), String(offset)]
+      );
+
+      // Add this chunk to our collection
+      allData = allData.concat(rows);
+
+      offset += chunkSize;
+      console.log(`Progress: ${Math.min(offset, totalRows)} / ${totalRows}`);
+    }
+
+    return allData;
+
+  } catch (err) {
+    console.error("Error during fetch:", err.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
+const addRecord = async (config, databaseName, tableName, validatedData) => {
+  let pool;
+  try {
+    pool = await mysql.createConnection({
+      ...config,
+      database: databaseName
+    });
+
+    // Prepare and run INSERT
+    const keys = Object.keys(validatedData);
+    const values = Object.values(validatedData).map(val => val === undefined ? null : val);
+    const placeholders = keys.map(() => '?').join(', ');
+
+    const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`;
+    const [result] = await pool.execute(query, values);
+
+    return { success: true, result: result };
+
+  } catch (error) {
+    console.error(`Error adding record in ${tableName}:`, error.message);
+    return null;
+  } finally {
+    if (pool) await pool.end();
+  }
+}
 
 
 module.exports = {
@@ -1902,6 +2035,7 @@ module.exports = {
   getDateTime,
   removefromarray,
   isSameArray,
+  hasArray,
   getMySQLVersion,
   isMySQL578OrAbove,
   isValidMySQLConfig,
@@ -1946,4 +2080,8 @@ module.exports = {
   dropColumn,
   writeJsFile,
   runQuery,
+  getTableRowCount,
+  getRequiredColumnNames,
+  getAllRowsAccurately,
+  addRecord,
 }
