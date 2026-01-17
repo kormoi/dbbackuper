@@ -160,6 +160,9 @@ module.exports = async function (allconfig, path) {
         break;
       }
     }
+    if(!mode){
+      mode = "merge"; // default mode
+    }
     // Lets determine workmode
     let workmode;
     const workmode_keys = [
