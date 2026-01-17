@@ -19,7 +19,9 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "cstyler": "^4.0.1",
+    "dbtasker": "^3.1.2",
     "fs": "^0.0.1-security",
     "mysql2": "^3.16.0",
     "path": "^0.12.7"

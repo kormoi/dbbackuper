@@ -5,7 +5,8 @@ const cstyler = require('cstyler');
 
 const defaultdb = ['information_schema', 'mysql', 'performance_schema', 'sys', 'world'];
 
-
+// require config and database names that you want to backup
+// keep it empty to backup all databases that are not default
 async function getmetadata(config, dbs = []) {
     try {
         // lets initialize our return object
@@ -99,8 +100,8 @@ async function getmetadata(config, dbs = []) {
                 }
             }
         }
-        // lets check if there is any reverse loop name or not
         const raw = jsondata;
+        // lets check if there is any reverse loop name or not
         for (const item of Object.keys(jsondata)) {
             for (const tables of Object.keys(jsondata[item])) {
                 const getreverseloop = fncs.reverseLoopName(tables);
@@ -116,7 +117,7 @@ async function getmetadata(config, dbs = []) {
             }
         }
         console.log(cstyler.green.bold("Successfully retrive database, table and column settings"));
-        return {data: jsondata, raw: raw};
+        return {dbtaskerdata: jsondata, raw: raw};
     } catch (err) {
         cstyler.error(err.message);
         return null;

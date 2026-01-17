@@ -1,8 +1,9 @@
 const fncs = require('./functions');
 const AdmZip = require("adm-zip");
-const fs = require("fs/promises");  // Importing fs.promises for async operations
-const path = require("path");
+const { count } = require('console');
 const cstyler = require('cstyler');
+const path = require('path');
+const fs = require('fs').promises;
 
 
 
@@ -11,88 +12,7 @@ const cstyler = require('cstyler');
 
 
 
-async function getLastSavedFile(directory) {
-    try {
-        // Read the directory
-        const files = await fs.readdir(directory);
 
-        // Handle empty directory
-        if (files.length === 0) {
-            throw new Error(`No files found in the directory: ${directory}`);
-        }
-
-        // Get file stats and sort by modification time
-        const fileStats = await Promise.all(
-            files.map(async (file) => {
-                const filePath = path.join(directory, file);
-                const stats = await fs.stat(filePath);
-                return { file, stats };
-            })
-        );
-
-        const sortedFiles = fileStats.sort((a, b) => b.stats.mtime - a.stats.mtime);
-
-        // Return the most recently saved file
-        const lastSavedFile = sortedFiles[0]?.file; // Use optional chaining
-        return lastSavedFile;
-    } catch (err) {
-        console.error(
-            `Error getting last saved file from directory "${directory}": ${err.message}`
-        );
-        return null; // Return `null` if an error occurs
-    }
-}
-async function compareJsonFiles(filePath1, filePath2) {
-    try {
-        // Ensure both files exist
-        await fs.access(filePath1);
-        await fs.access(filePath2);
-
-        // Read the content of both files
-        const fileContent1 = await fs.readFile(filePath1, "utf-8");
-        const fileContent2 = await fs.readFile(filePath2, "utf-8");
-
-        // Check if either file is empty
-        if (!fileContent1.trim()) {
-            console.error("File 1 is empty.");
-            return false;
-        }
-        if (!fileContent2.trim()) {
-            console.error("File 2 is empty.");
-            return false;
-        }
-
-        // Parse the JSON content of both files
-        let jsonData1, jsonData2;
-        try {
-            jsonData1 = JSON.parse(fileContent1);
-        } catch (parseError) {
-            console.error("Failed to parse File 1:", parseError.message);
-            return false;
-        }
-
-        try {
-            jsonData2 = JSON.parse(fileContent2);
-        } catch (parseError) {
-            console.error("Failed to parse File 2:", parseError.message);
-            return false;
-        }
-
-        // Compare the two JSON objects using deepEqual
-        const isEqual = JSON.stringify(jsonData1) === JSON.stringify(jsonData2);
-        console.log("Are the JSON files equal?", isEqual);
-        return isEqual;
-    } catch (error) {
-        // Log specific errors
-        if (error.code === "ENOENT") {
-            console.warn(`File not found: ${error.path}`);
-            return false;
-        } else {
-            console.error("Error comparing JSON files:", error.message);
-            return null;
-        }
-    }
-}
 async function readJsonFile(filePath) {
     try {
         // Check if the file has a .json extension
@@ -132,17 +52,6 @@ async function writeJsonFile(filePath, data) {
         return null;
     }
 }
-const writeJsFile = async (filePath, content) => {
-    try {
-        await fs.access(filePath).catch(() => fs.mkdir(path.dirname(filePath), { recursive: true }));
-        await fs.writeFile(filePath, content, 'utf8');
-        console.log(`File written successfully to ${filePath}`);
-        return true;
-    } catch (error) {
-        console.error(`Error writing file at ${filePath}:`, error);
-        return null;
-    }
-};
 
 // Adm Zip
 function zipFile(sourcePath, outPath) {
@@ -171,14 +80,13 @@ function unzipFile(zipPath, targetDir) {
         // extractAllTo(targetPath, overwrite)
         zip.extractAllTo(targetDir, true);
 
-        console.log(`Successfully extracted to: ${targetDir}`);
+        console.log(`Successfully extracted zip file`);
         return true;
     } catch (e) {
         console.error(`Unzip Error: ${e.message}`);
         return false;
     }
 }
-
 async function compressbackupfile(path, data) {
     try {
         // is path absolute
@@ -186,20 +94,20 @@ async function compressbackupfile(path, data) {
             console.warn("An absolute output path is required. You can do 'path.join(__dirname, [Your path here]);'");
             return false;
         }
-        let text = `module.exports = ${(fncs.stringifyAny(data))}`;
-        const soursePath = path.join(path, "./backup.js");
-        const writejs = await writeJsFile(soursePath, text);
+        const sourcePath = path.join(__dirname, "./backupfiles/backup.json");
+        const writejs = await writeJsonFile(sourcePath, data);
         if (writejs === null) {
+            console.error("Having problem creating JSON file. Please try again or reinstall the module.");
             return null;
         }
-        const zipfile = zipFile(soursePath, path);
+        const zipfile = zipFile(sourcePath, path);
         if (zipfile === null) {
             return null;
         }
         console.log("Successfully zipped the file.");
         // lets delete file
         try {
-            await fs.unlink(soursePath);
+            await fs.unlink(sourcePath);
         } catch (err) {
             console.error(err.message);
         }
@@ -208,4 +116,93 @@ async function compressbackupfile(path, data) {
         console.error(err.message);
         return null;
     }
+}
+async function isFolderPath(folderPath) {
+    try {
+        const stats = await fs.stat(folderPath);
+        return stats.isDirectory();
+    } catch (err) {
+        // If the folder doesn't exist yet, we can check if it has no extension
+        return null;
+    }
+}
+async function makeDirectory(dirPath) {
+    try {
+        await fs.mkdir(dirPath, { recursive: true });
+        return true;
+    } catch (err) {
+        console.error(`Error creating directory: ${err.message}`);
+        return null;
+    }
+}
+async function isfilepath(filePath, ext = ".zip") {
+    // 1. Check extension first (fast)
+    let exten;
+    if (typeof ext !== "string") return null;
+    if (!ext.startsWith(".")) {
+        exten = "." + ext;
+    }
+    const isZipExt = path.extname(filePath).toLowerCase() === exten;
+    if (!isZipExt) return false;
+
+    try {
+        // 2. Check if it actually exists and is a file (not a folder named "test.zip")
+        const stats = await fs.stat(filePath);
+        return stats.isFile();
+    } catch (err) {
+        // If file doesn't exist, we return null
+        return null;
+    }
+}
+async function clearFolderContents(folderPath) {
+    try {
+        // 1. Read all files/folders inside the directory
+        const files = await fs.readdir(folderPath);
+
+        // 2. Loop and delete each item
+        const deletePromises = files.map(file => {
+            const filePath = path.join(folderPath, file);
+
+            // Use rm with recursive: true to delete subfolders as well
+            // Use force: true to ignore errors if the file is already gone
+            return fs.rm(filePath, { recursive: true, force: true });
+        });
+        await Promise.all(deletePromises);
+        return true;
+    } catch (err) {
+        console.error(`Error clearing folder: ${err.message}`);
+        return null;
+    }
+}
+async function deleteSingleFile(filePath) {
+    try {
+        // unlink deletes the file
+        await fs.unlink(filePath);
+        
+        console.log(`Successfully deleted file: ${filePath}`);
+        return true;
+    } catch (err) {
+        // Handle case where file doesn't exist to avoid noisy errors
+        if (err.code === 'ENOENT') {
+            console.warn(`File not found, nothing to delete: ${filePath}`);
+            return true; 
+        }
+        
+        console.error(`Error deleting file: ${err.message}`);
+        return null;
+    }
+}
+
+
+
+module.exports = {
+    readJsonFile,
+    writeJsonFile,
+    unzipFile,
+    compressbackupfile,
+    isFolderPath,
+    makeDirectory,
+    isfilepath,
+    clearFolderContents,
+    deleteSingleFile,
 }

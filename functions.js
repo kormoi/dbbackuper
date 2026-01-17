@@ -2028,6 +2028,117 @@ async function addRecord(config, databaseName, tableName, validatedData) {
     if (pool) await pool.end();
   }
 }
+async function updateRecord(config, databaseName, tableName, validatedData, primaryKeyColumn) {
+  let connection;
+  try {
+    // 1. Establish the connection
+    connection = await mysql.createConnection({
+      ...config,
+      database: databaseName
+    });
+
+    // Logic for deciding between Add or Update
+    const pkValue = validatedData[primaryKeyColumn];
+    if (pkValue === undefined || pkValue === null) {
+      throw new Error(`Primary key value for "${primaryKeyColumn}" is missing in the data.`);
+    }
+
+    // 3. Prepare the data for the SET clause
+    // We create a copy and remove the PK so we don't try to "update" the ID column itself
+    const updateData = { ...validatedData };
+    delete updateData[primaryKeyColumn];
+
+    const keys = Object.keys(updateData);
+    const values = Object.values(updateData).map(val => val === undefined ? null : val);
+
+    // 4. Build the Dynamic SQL
+    // Uses backticks (??) for table/column names to handle reserved words or spaces
+    const setClause = keys.map(key => `?? = ?`).join(', ');
+    const query = `UPDATE ?? SET ${setClause} WHERE ?? = ?`;
+
+    // 5. Organize the arguments for the query
+    // Parameters: [tableName, key1, val1, key2, val2, ..., pkColumnName, pkValue]
+    const queryParams = [tableName];
+    keys.forEach((key, index) => {
+      queryParams.push(key, values[index]);
+    });
+    queryParams.push(primaryKeyColumn, pkValue);
+
+    // 6. Execute
+    const [result] = await connection.query(query, queryParams);
+
+    return {
+      success: true,
+      affectedRows: result.affectedRows,
+      message: "Record updated successfully"
+    };
+
+  } catch (error) {
+    console.error(`[TB Backup] Update Error in ${tableName}:`, error.message);
+    return { success: false, error: error.message };
+  } finally {
+    // 7. Close connection to prevent memory leaks
+    if (connection) {
+      await connection.end();
+    }
+  }
+}
+async function checkPrimaryKey(config, database, table) {
+  let connection;
+  try {
+    // Create connection using the config provided
+    connection = await mysql.createConnection({
+      ...config,
+      database: database
+    });
+
+    const query = `
+      SELECT COLUMN_NAME 
+      FROM information_schema.COLUMNS 
+      WHERE TABLE_SCHEMA = ? 
+      AND TABLE_NAME = ? 
+      AND COLUMN_KEY = 'PRI'
+    `;
+
+    const [rows] = await connection.execute(query, [database, table]);
+
+    // Return the column name or null
+    return rows.length > 0 ? rows[0].COLUMN_NAME : false;
+
+  } catch (error) {
+    console.error("Error finding primary key:", error.message);
+    return null;
+  } finally {
+    // Crucial: End the connection
+    if (connection) await connection.end();
+  }
+}
+async function checkRowExists(config, database, table, column, columnValue) {
+  let connection;
+  try {
+    connection = await mysql.createConnection({
+      ...config,
+      database: database
+    });
+
+    // Use .query instead of .execute for '??' support
+    // ?? escapes identifiers (tables/columns)
+    // ? escapes values
+    const sql = "SELECT 1 FROM ?? WHERE ?? = ? LIMIT 1";
+    const [rows] = await connection.query(sql, [table, column, columnValue]);
+
+    return rows.length > 0;
+
+  } catch (error) {
+    console.error("Error checking row existence:", error.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
+
+
+
 
 
 module.exports = {
@@ -2084,4 +2195,7 @@ module.exports = {
   getRequiredColumnNames,
   getAllRowsAccurately,
   addRecord,
+  updateRecord,
+  checkPrimaryKey,
+  checkRowExists,
 }
