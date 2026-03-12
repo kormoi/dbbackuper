@@ -37,6 +37,10 @@ async function getmetadata(config, dbs = []) {
                 }
             }
         }
+        if(Object.keys(jsondata).length === 0) {
+            cstyler.warn("No databases to process.");
+            return {dbtaskerdata: null, raw: null};
+        }
         // Now we have the databases to process in jsondata
         for (const dbname of Object.keys(jsondata)) {
             const tables = await fncs.getTableNames(config, dbname);
@@ -116,7 +120,7 @@ async function getmetadata(config, dbs = []) {
                 jsondata[getreverseloop[0]] = jsondata[item];
             }
         }
-        console.log(cstyler.green.bold("Successfully retrive database, table and column settings"));
+        console.log(cstyler.green.bold("Successfully retrieved database, table and column structure metadata in JSON format."));
         return {dbtaskerdata: jsondata, raw: raw};
     } catch (err) {
         cstyler.error(err.message);

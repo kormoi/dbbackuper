@@ -56,6 +56,29 @@ function getDateTime(separator = "/") {
     datetime: formattedDateTime,
   };
 }
+async function detectDatabase(config) {
+    // 1. Try PostgreSQL first (Stricter handshakes)
+    if (config.connectionString?.startsWith('postgres') || config.port === 5432) {
+        try {
+            const pool = new Pool(config);
+            const client = await pool.connect();
+            client.release(); // Release back to pool
+            return { type: 'pg', connection: pool };
+        } catch (e) {
+            // If it failed but wasn't a "wrong driver" error, handle it
+        }
+    }
+
+    // 2. Try MySQL
+    try {
+        const connection = await mysql.createPool(config);
+        // Quick probe to ensure it's actually MySQL
+        await connection.query('SELECT 1');
+        return { type: 'mysql', connection: connection };
+    } catch (e) {
+        throw new Error("Could not connect or identify database type from config.");
+    }
+}
 async function getMySQLVersion(config) {
   const connection = await mysql.createConnection(config);
   try {
@@ -1968,28 +1991,43 @@ async function getAllRowsAccurately(config, databaseName, tableName) {
   try {
     connection = await mysql.createConnection(config);
 
-    // 1. Get the total number of rows first
     const [countResult] = await connection.execute(
       `SELECT COUNT(*) AS total FROM \`${databaseName}\`.\`${tableName}\``
     );
     const totalRows = countResult[0].total;
-
     console.log(`Starting export: ${totalRows} rows found.`);
 
     let allData = [];
     const chunkSize = 5000;
     let offset = 0;
 
-    // 2. Loop until the offset reaches the total count
     while (offset < totalRows) {
-      const [rows] = await connection.execute(
+      // 1. Capture 'fields' metadata in the second array element
+      const [rows, fields] = await connection.execute(
         `SELECT * FROM \`${databaseName}\`.\`${tableName}\` LIMIT ? OFFSET ?`,
         [String(chunkSize), String(offset)]
       );
 
-      // Add this chunk to our collection
-      allData = allData.concat(rows);
+      // 2. Identify which columns are NATIVE JSON (Type 245)
+      const jsonColumns = fields
+        .filter(field => field.columnType === 245)
+        .map(field => field.name);
 
+      // 3. Process rows: Parse only if it's a native JSON column
+      const processedRows = rows.map(row => {
+        jsonColumns.forEach(colName => {
+          if (row[colName] !== null && typeof row[colName] === 'string') {
+            try {
+              row[colName] = JSON.parse(row[colName]);
+            } catch (e) {
+              // If it's already an object or fails, leave it as is
+            }
+          }
+        });
+        return row;
+      });
+
+      allData = allData.concat(processedRows);
       offset += chunkSize;
       console.log(`Progress: ${Math.min(offset, totalRows)} / ${totalRows}`);
     }
@@ -2147,6 +2185,7 @@ module.exports = {
   removefromarray,
   isSameArray,
   hasArray,
+  detectDatabase,
   getMySQLVersion,
   isMySQL578OrAbove,
   isValidMySQLConfig,

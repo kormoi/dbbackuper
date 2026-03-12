@@ -62,9 +62,6 @@ async function checkfile(filePath) {
 }
 module.exports = async function (allconfig, path) {
   try {
-    if (!fncs.isJsonObject(allconfig)) {
-      throw new Error("Invalid configuration object.");
-    }
     // Lets work on path
     if (path.isAbsolute(path) === false) {
       console.warn(`The provided file path "${filePath}" is not absolute. Absolute path is required.`);
@@ -72,6 +69,9 @@ module.exports = async function (allconfig, path) {
     }
     let filePath = path;
     // Process the configuration
+    if (!fncs.isJsonObject(allconfig)) {
+      throw new Error("Invalid configuration object.");
+    }
     let config = {};
     if (allconfig.port && allconfig.user && allconfig.host && allconfig.password) {
       config.port = allconfig.port;
@@ -160,7 +160,7 @@ module.exports = async function (allconfig, path) {
         break;
       }
     }
-    if(!mode){
+    if (!mode) {
       mode = "merge"; // default mode
     }
     // Lets determine workmode
@@ -243,19 +243,16 @@ module.exports = async function (allconfig, path) {
       } else if (backup_values.includes(fncs.stringifyAny(key).toLowerCase())) {
         if (truers.includes(allconfig[key])) {
           workmode = "download";
-          break;
         } else if (falsers.includes(allconfig[key])) {
           workmode = "upload";
-          break;
         } else if (backup_values.includes(fncs.stringifyAny(allconfig[key]).toLowerCase())) {
           workmode = "download";
-          break;
         } else if (upload_values.includes(fncs.stringifyAny(allconfig[key]).toLowerCase())) {
           workmode = "upload";
-          break;
         } else {
           console.warn(`A valid value is required on config.${key}`);
         }
+        break;
       } else if (upload_values.includes(fncs.stringifyAny(key).toLowerCase())) {
         if (truers.includes(allconfig[key])) {
           workmode = "upload";
@@ -279,34 +276,44 @@ module.exports = async function (allconfig, path) {
     if (isfile === null) {
       console.warn("A valid file path is required");
     }
-    const iffolder = await filefunctions.isFolderPath(filePath);
-    if ((iffolder = null || iffolder === false) && isfile !== true) {
+    let iffolder = await filefunctions.isFolderPath(filePath);
+    if ((iffolder = null || iffolder === false) && !isfile) {
       const makeit = await filefunctions.makeDirectory(filePath);
       if (makeit === null) {
         console.error("Required a valid folder path.");
         return;
       }
+      iffolder = await filefunctions.isFolderPath(filePath);
     }
     // Let's check the file if data available or not, if filepath
     let filejson;
-    if (isfile) {
+    if (isfile && workmode !== "download") {
       filejson = await checkfile(filePath);
     }
     // Let's check combination of path and work mode
-    if (isfile === true && workmode === "download") {
-      console.warn(cstyler.bold.red("You provided a file path and set the work mode to download. As you provided a file path we are going to backup the database."));
-      filePath = path.dirname(filePath);
-    } else if (isfile === true && workmode === undefined) {
-      workmode = "upload";
-    } else if (iffolder === true && workmode === "upload") {
-      console.warn(cstyler.bold.red("You provided a folder path and set the work mode to backup form file or upload. As you provided a folder path we are going to backup the database."));
-      workmode = "download";
-    } else if (iffolder === true && workmode === undefined) {
-      workmode = "download";
-    }
-    if (workmode === "upload" && !fncs.isJsonObject(filejson)) {
-      console.error("The file is not valid and backup system is set to upload. Can not perform this action.");
-      return;
+    if (workmode === "download") {
+      if (!iffolder) {
+        if (isfile) {
+          filePath = path.dirname(filePath);
+        } else {
+          console.error("Valid folder path is required to download the database backup file.");
+          return;
+        }
+      }
+    } else if (workmode === "upload") {
+      if (!isfile) {
+        console.warn(`Valid filepath is require for uploading old data to database.`);
+        return;
+      } else if (!filejson) {
+        console.error("Valid file is required to get file data and upload data.");
+        return;
+      }
+    } else if (workmode === undefined) {
+      if (filejson) {
+        workmode = "upload";
+      } else if (iffolder) {
+        workmode = "download";
+      }
     }
     // lets work on backup operation
     if (workmode === "download") {
@@ -315,7 +322,7 @@ module.exports = async function (allconfig, path) {
       let dblist;
       const dbkeys = ['db', 'database', 'dblist', 'databaselist', 'db_list', 'database_list'];
       for (const item of Object.keys(allconfig)) {
-        if (dbkeys.includes(String(item).toLowerCase()) && Array.isArray(dbkeys[item])) {
+        if (dbkeys.includes(String(item).toLowerCase())) {
           dblist = dbkeys[item];
           break;
         }

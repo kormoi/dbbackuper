@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "funding": {
     "type": "individual",
-    "url": "https://www.patreon.com/kormoi/gift"
+    "url": "https://www.patreon.com/cw/kormoi"
   },
   "description": "You can backup your database easily using this module",
   "keywords": [
@@ -24,6 +24,7 @@
     "dbtasker": "^3.1.2",
     "fs": "^0.0.1-security",
     "mysql2": "^3.16.0",
-    "path": "^0.12.7"
+    "path": "^0.12.7",
+    "stream": "^0.0.3"
   }
 }
