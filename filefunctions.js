@@ -6,6 +6,9 @@ const path = require('path');
 const fs = require('fs').promises;
 const v8 = require('v8');
 const os = require('os');
+const { pipeline } = require('stream/promises');
+const { Readable } = require('stream');
+const fsRaw = require('fs');
 
 
 
@@ -13,6 +16,74 @@ const os = require('os');
 
 
 
+const SIGNATURES = [
+    // --- IMAGES & DESIGN (Strict, zero-offset signatures first) ---
+    { hex: '89504E47', ext: 'png' },
+    { hex: 'FFD8FF', ext: 'jpeg' },
+    { hex: '47494638', ext: 'gif' },
+    { hex: '38425053', ext: 'psd' },
+    { hex: '424D', ext: 'bmp' },
+    { hex: '00000100', ext: 'ico' },
+    { hex: '00000200', ext: 'cur' },
+    { hex: '49492A00', ext: 'tif' },
+    { hex: '4D4D002A', ext: 'tif' },
+    { hex: '52494646', ext: 'webp', sub: { offset: 8, hex: '57454250' } },
+
+    // --- WEB TEXT FORMATS (New Additions) ---
+    { hex: '7B', ext: 'json' },             // Matches opening brace '{'
+    { hex: '5B', ext: 'json' },             // Matches opening bracket '['
+    { hex: '3C21444F4354595045', ext: 'html' }, // Matches '<!DOCTYPE'
+    { hex: '3C68746D6C', ext: 'html' },     // Matches '<html'
+
+    // --- DOCUMENTS & E-BOOKS ---
+    { hex: '25504446', ext: 'pdf' },
+    { hex: '504B0304', ext: 'docx', sub: { offset: 30, hex: '646F6378' } },
+    { hex: '504B0304', ext: 'xlsx', sub: { offset: 30, hex: '786C7378' } },
+    { hex: '504B0304', ext: 'zip' }, // Generic zip fallback placed safely after explicit docx/xlsx sub-checks
+    { hex: 'D0CF11E0', ext: 'doc' },
+    { hex: '7B5C727466', ext: 'rtf' },
+    { hex: '49545346', ext: 'chm' },
+
+    // --- ARCHIVES & INSTALLERS ---
+    { hex: '52617221', ext: 'rar' },
+    { hex: '377ABCAF', ext: '7z' },
+    { hex: '1F8B', ext: 'gz' },
+    { hex: '425A68', ext: 'bz2' },
+    { hex: 'FD377A585A00', ext: 'xz' },
+    { hex: '4D5A', ext: 'exe' },
+    { hex: '7F454C46', ext: 'elf' },
+    { hex: 'CAFEBABE', ext: 'class' },
+    { hex: '213C617263683E', ext: 'deb' },
+
+    // --- AUDIO ---
+    { hex: '494433', ext: 'mp3' },
+    { hex: 'FFF1', ext: 'aac' },
+    { hex: 'FFF9', ext: 'aac' },
+    { hex: '664C6143', ext: 'flac' },
+    { hex: '4F676753', ext: 'ogg' },
+    { hex: '2321414D52', ext: 'amr' },
+    { hex: '4D546864', ext: 'mid' },
+    { hex: '52494646', ext: 'wav', sub: { offset: 8, hex: '57415645' } },
+
+    // --- VIDEOS & COMPLEX CONTAINERS (Pushed down due to offsets/loose matching) ---
+    { hex: '1A45DFA3', ext: 'mkv' },
+    { hex: '3026B275', ext: 'wmv' },
+    { hex: '000001BA', ext: 'mpg' },
+    { hex: '000001B3', ext: 'mpg' },
+    { hex: '464C5601', ext: 'flv' },
+    { hex: '52494646', ext: 'avi', sub: { offset: 8, hex: '41564920' } },
+    { hex: '66747970', ext: 'mp4', offset: 4 },
+    { hex: '667479707174', ext: 'mov', offset: 4 },
+    { hex: '667479706D703432', ext: 'm4v', offset: 4 },
+    { hex: '76425052', ext: 'heic', offset: 4 },
+    { hex: '45505542', ext: 'epub', offset: 10 },
+
+    // --- FONTS ---
+    { hex: '00010000', ext: 'ttf' },
+    { hex: '4F54544F', ext: 'otf' },
+    { hex: '774F4646', ext: 'woff' },
+    { hex: '774F4632', ext: 'woff2' }
+];
 
 function getMemoryStats() {
     // 1. V8 Heap Stats (The Node.js Internal RAM)
@@ -49,7 +120,7 @@ async function getFolderTree(dirPath) {
     const tree = {};
     // Convert the initial input to an absolute path once
     const absoluteDirPath = path.resolve(dirPath);
-    
+
     try {
         const items = await fs.readdir(absoluteDirPath);
 
@@ -62,7 +133,7 @@ async function getFolderTree(dirPath) {
                 name: item,
                 path: fullPath, // This is now guaranteed to be absolute
                 type: isDirectory ? 'folder' : 'file',
-                size: stats.size, 
+                size: stats.size,
                 extension: isDirectory ? null : path.extname(item)
             };
 
@@ -71,7 +142,7 @@ async function getFolderTree(dirPath) {
                 tree[item].contents = await getFolderTree(fullPath);
             }
         }
-        
+
         return tree;
     } catch (err) {
         // If the path doesn't exist or is inaccessible
@@ -79,7 +150,23 @@ async function getFolderTree(dirPath) {
         return {};
     }
 }
+async function getNextFileName(filepath) {
+    let maxCount = 0;
+    let folderPath = path.join(__dirname, filepath);
+    const result = await getFolderTree(folderPath);
+    if (!result) return null;
+    for (const file of Object.values(result)) {
+        let fileName = file.name;
+        fileName = fileName.split(".").slice(0, -1).join("."); // Remove extension
+        const num = parseInt(fileName, 10);
 
+        // If it's a valid number and bigger than our current max, update max
+        if (!isNaN(num) && num > maxCount) {
+            maxCount = num;
+        }
+    }
+    return maxCount + 1;
+}
 async function readJsonFile(filePath) {
     try {
         // Check if the file has a .json extension
@@ -274,95 +361,206 @@ async function deletePath(targetPath) {
         // 'recursive: true' handles nested folders/files
         // 'force: true' prevents errors if the path doesn't exist
         await fs.rm(targetPath, { recursive: true, force: true });
-        
-        return { 
-            success: true, 
-            message: `Successfully deleted: ${targetPath}` 
-        };
+
+        return true;
     } catch (err) {
         // This usually triggers for permission issues (EACCES) 
         // or if the file is currently locked by another process (EBUSY)
         console.error(`Delete Error [${targetPath}]:`, err.message);
-        return { 
-            success: false, 
-            error: err.message, 
-            code: err.code 
-        };
+        console.error(`Delete Error code [${targetPath}]:`, err.code);
+        return false;
     }
 }
-async function saveBufferToFile(buffer, targetPath, fileNameWithoutExt) {
-    /**
-     * Supported Extensions:
-     *
-    // Video
-    "mp4", "mov", "mkv", "avi", "wmv", "mpg",
 
-    // Images & Design
-    "jpeg", "png", "gif", "webp", "tif", "psd", "ai",
+async function saveBufferToFile(buffer, folderPath, fileNameWithoutExt) {
+    if (!Buffer.isBuffer(buffer)) throw new Error("Data must be a Buffer");
 
-    // Documents
-    "docx", "doc", "pdf", "csv", "xml", "json",
-
-    // Archives
-    "rar", "7z", "zip", "gz"
-    */
-    if (!Buffer.isBuffer(buffer)) {
-        throw new Error("Data must be a Buffer");
-    }
-
-    // Convert the first 24 bytes to Hex to catch video signatures
-    const hex = buffer.toString('hex', 0, 24).toUpperCase();
     let ext = 'bin';
+    const headerHex = buffer.toString('hex', 0, 32).toUpperCase();
 
-    // --- VIDEO ---
-    // MP4/MOV: Look for 'ftyp' (66747970) usually at offset 4
-    if (hex.includes('66747970')) {
-        // Quick check: 'qt  ' is usually MOV, others are MP4
-        ext = hex.includes('71742020') ? 'mov' : 'mp4';
+    // 2. Loop through the Map (Efficient)
+    for (const sig of SIGNATURES) {
+        const offset = (sig.offset || 0) * 2; // hex is 2 chars per byte
+        const chunk = headerHex.substring(offset, offset + sig.hex.length);
+
+        if (chunk === sig.hex) {
+            ext = sig.ext;
+            // Handle sub-signatures (like AVI vs WEBP which both start with RIFF)
+            if (sig.sub) {
+                const subOffset = sig.sub.offset * 2;
+                const subChunk = headerHex.substring(subOffset, subOffset + sig.sub.hex.length);
+                if (subChunk !== sig.sub.hex) continue;
+            }
+            break;
+        }
     }
-    else if (hex.startsWith('1A45DFA3')) ext = 'mkv';
-    else if (hex.startsWith('52494646') && hex.substring(16, 24) === '41564920') ext = 'avi'; // RIFF + AVI 
-    else if (hex.startsWith('3026B275')) ext = 'wmv';
-    else if (hex.startsWith('000001BA') || hex.startsWith('000001B3')) ext = 'mpg';
 
-    // --- IMAGES & DESIGN ---
-    else if (hex.startsWith('FFD8FF')) ext = 'jpeg';
-    else if (hex.startsWith('89504E47')) ext = 'png';
-    else if (hex.startsWith('47494638')) ext = 'gif';
-    else if (hex.startsWith('38425053')) ext = 'psd';
-    else if (hex.startsWith('52494646') && hex.substring(16, 24) === '57454250') ext = 'webp'; // RIFF + WEBP
-    else if (hex.startsWith('49492A00') || hex.startsWith('4D4D002A')) ext = 'tif';
-    else if (hex.startsWith('25504446')) ext = 'ai'; // Modern AI (PDF)
-    else if (hex.startsWith('25215053')) ext = 'ai'; // Old AI (PostScript)
-
-    // --- DOCUMENTS & ARCHIVES ---
-    else if (hex.startsWith('504B0304')) ext = 'docx';
-    else if (hex.startsWith('D0CF11E0')) ext = 'doc';
-    else if (hex.startsWith('52617221')) ext = 'rar';
-    else if (hex.startsWith('377ABCAF')) ext = '7z';
-
-    // --- TEXT / CSV ---
-    else {
-        const isText = !buffer.slice(0, 50).some(byte => byte < 9 || (byte > 13 && byte < 32));
+    // 3. Fallback: Text/CSV detection
+    if (ext === 'bin') {
+        const isText = !buffer.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
         if (isText) ext = 'csv';
     }
 
-    const fullFileName = `${fileNameWithoutExt}.${ext}`;
-    const finalPath = path.join(targetPath, fullFileName);
+    const fullPath = path.join(folderPath, `${fileNameWithoutExt}.${ext}`);
 
+    // 4. Stream to disk (RAM Safe)
     try {
-        await fs.mkdir(targetPath, { recursive: true });
-        await fs.writeFile(finalPath, buffer);
-        return { success: true, path: finalPath, extension: ext };
+        await fs.promises.mkdir(folderPath, { recursive: true });
+        return new Promise((resolve) => {
+            const stream = fs.createWriteStream(fullPath);
+            stream.on('error', (err) => resolve({ success: false, error: err.message }));
+            stream.on('finish', () => resolve({ success: true, path: fullPath, extension: ext }));
+            stream.end(buffer);
+        });
     } catch (err) {
         return { success: false, error: err.message };
     }
 }
+async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
+    let buffer;
+    let isOriginallyBuffer = Buffer.isBuffer(data);
+    let isOriginallyHex = false;
+    let isOriginallyPlainString = false;
 
+    // 1. Adaptive Normalization
+    if (isOriginallyBuffer) {
+        buffer = data;
+    } else if (typeof data === 'string') {
+        const isDataUrl = data.startsWith('data:');
 
+        if (isDataUrl && data.includes(';base64,')) {
+            const base64Data = data.split(';base64,')[1];
+            buffer = Buffer.from(base64Data, 'base64');
+        }
+        else if (/^[0-9A-Fa-f]+$/.test(data) && data.length % 2 === 0) {
+            buffer = Buffer.from(data, 'hex');
+            isOriginallyHex = true;
+        }
+        else if (!isDataUrl && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0 && data.length > 64) {
+            buffer = Buffer.from(data, 'base64');
+        }
+        // Intercepts normal prose text strings (e.g., "Hi how are you")
+        else {
+            buffer = Buffer.from(data, 'utf8');
+            isOriginallyPlainString = true;
+        }
+    } else {
+        throw new Error("Data must be a Buffer or a String");
+    }
+
+    // --- TEXT / PROSE STRING BYPASS LAYER ---
+    // If it was a plain text string from the start, do not save a file. Return it immediately as text data.
+    if (isOriginallyPlainString) {
+        return { success: true, isText: true, data: data };
+    }
+
+    let ext = 'bin';
+    const headerHex = buffer.toString('hex', 0, 256).toUpperCase();
+
+    // 2. Linear Signature Discovery Layer
+    for (const sig of SIGNATURES) {
+        const targetHex = sig.hex.toUpperCase();
+        const byteOffset = sig.offset || 0;
+        const hexCharOffset = byteOffset * 2;
+
+        const chunk = headerHex.substring(hexCharOffset, hexCharOffset + targetHex.length);
+
+        if (chunk === targetHex) {
+            ext = sig.ext;
+
+            if (sig.sub) {
+                const subByteOffset = sig.sub.offset || 0;
+                const subHexCharOffset = subByteOffset * 2;
+                const targetSubHex = sig.sub.hex.toUpperCase();
+
+                const subChunk = headerHex.substring(subHexCharOffset, subHexCharOffset + targetSubHex.length);
+
+                if (subChunk === targetSubHex) {
+                    break;
+                } else {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    // --- STRATEGIC CATCH-ALL ROUTING (For files that must be saved) ---
+    if (ext === 'bin') {
+        if (isOriginallyBuffer) {
+            ext = 'dat'; // Raw unmatched buffer saves as a functional data file
+        } else if (isOriginallyHex) {
+            ext = 'hex'; // Raw unmatched hex code string saves as a hex file
+        } else {
+            // Backup catch-all for any decoded binary content that evaluates as text characters
+            const isText = !buffer.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
+            if (isText) {
+                return { success: false, isText: true, data: buffer.toString('utf8') };
+            }
+            ext = 'dat';
+        }
+    }
+
+    const fullPath = path.join(folderPath, `${fileNameWithoutExt}.${ext}`);
+
+    // 4. Unified Safe File Stream Execution Block
+    try {
+        await fs.mkdir(folderPath, { recursive: true });
+
+        await pipeline(
+            Readable.from(buffer),
+            fsRaw.createWriteStream(fullPath)
+        );
+
+        return { success: true, path: fullPath, extension: ext };
+
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+}
+/**
+ * Reads a file and converts it to Base64 with a RAM safety check.
+ */
+async function fileToBase64(filePath) {
+    try {
+        // 1. Get file size first without loading it
+        const stats = await fs.stat(filePath);
+        const fileSize = stats.size;
+        const freeRAM = os.freemem();
+
+        // 2. Safety Check: Do we have enough RAM for Buffer + String + Overhead?
+        // We need roughly 3x the file size in free RAM to be safe.
+        if (fileSize * 3 > freeRAM) {
+            throw new Error(`File is too large (${(fileSize / 1024 / 1024).toFixed(2)}MB) for the current available RAM.`);
+        }
+
+        // 3. Read and convert
+        const buffer = await fs.readFile(filePath);
+        const base64 = buffer.toString('base64');
+
+        return base64;
+    } catch (err) {
+        console.error("Base64 Conversion Error:", err.message);
+        return null;
+    }
+}
+// lets get file name on the folder that were set as count
+async function getUniqueFilePath(folderPath, fileName, ext) {
+    let fullPath = path.join(folderPath, `${fileName}.${ext}`);
+    let counter = 1;
+
+    // Check if file exists, if so, add (1), (2), etc.
+    while (fs.existsSync(fullPath)) {
+        fullPath = path.join(folderPath, `${fileName}_${counter}.${ext}`);
+        counter++;
+    }
+    return fullPath;
+}
 module.exports = {
+    SIGNATURES,
     getMemoryStats,
     getFolderTree,
+    getNextFileName,
     readJsonFile,
     writeJsonFile,
     unzipFile,
@@ -375,4 +573,7 @@ module.exports = {
     deleteSingleFile,
     deletePath,
     saveBufferToFile,
+    saveDataToFile,
+    fileToBase64,
+    getUniqueFilePath
 }
