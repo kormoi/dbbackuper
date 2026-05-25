@@ -14,10 +14,40 @@ const { count } = require('console');
 
 
 function toReadable(value) {
-    // 1. Binary (Buffer / Uint8Array)
+    // 1. ADVANCED SPATIAL & GEOMETRY LAYER (MySQL / PG Support)
+    if (value !== null && typeof value === 'object') {
+
+        // --- Postgres/PostGIS direct object driver structures ---
+        if (value.x !== undefined && value.y !== undefined) {
+            return { ischanged: true, value: `POINT(${value.x} ${value.y})`, type: 'point' };
+        }
+
+        // --- MySQL Spatial Buffer Parser ---
+        // MySQL driver emits geometry as a Buffer, but it prefixes a 4-byte SRID header before the WKB.
+        if (Buffer.isBuffer(value) && value.length > 4) {
+            try {
+                // Slice off the first 4 bytes (MySQL's internal SRID tracking header) to get the clean WKB
+                const wkbBuffer = value.slice(4);
+
+                // Parse using the built-in wkx library
+                const geometry = wkx.Geometry.parse(wkbBuffer);
+
+                // Convert it dynamically to a clean readable string (e.g., "POLYGON((...))", "LINESTRING(...)")
+                const wktString = geometry.toWkt();
+
+                // Extract the geometry type lower-cased ('point', 'polygon', 'geometrycollection')
+                const geomType = geometry.constructor.name.toLowerCase();
+
+                return { ischanged: true, value: wktString, type: geomType };
+            } catch (e) {
+                // If it fails parsing as a geometry data format, drop it safely to the raw buffer block below
+            }
+        }
+    }
+    // 1. Binary (Buffer / Uint8Array) -> Kept purely intact as a raw buffer object
     if (Buffer.isBuffer(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
         const buf = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-        return { ischanged: true, value: buf.toString('base64'), type: 'buffer' };
+        return { ischanged: true, value: buf, type: 'buffer' };
     }
 
     // 2. BigInt (MySQL/PG bigserial/bigint)
@@ -31,13 +61,10 @@ function toReadable(value) {
     }
 
     // 4. PG JSON/JSONB or Array Columns
-    // PostgreSQL driver returns objects/arrays directly. We must stringify for JSON storage.
     if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-        // Check for Spatial (PostGIS/MySQL)
         if (value.x !== undefined && value.y !== undefined) {
             return { ischanged: true, value: `POINT(${value.x} ${value.y})`, type: 'point' };
         }
-        // Standard JSONB / Array
         return { ischanged: true, value: JSON.stringify(value), type: 'json' };
     }
 
@@ -46,136 +73,42 @@ function toReadable(value) {
         return { ischanged: true, value: value.toString(), type: 'special_num' };
     }
 
-    // 6. Existing Base64 Detection (Fallback)
+    // 6. Direct Native Hex & Base64 Detection Layer
     if (typeof value === 'string') {
-        const start = value.substring(0, 16);
-        const isFileBase64 = /^(?:\/9j\/|iVBOR|R0lGO|UklGR|JVBER|UEsDB|ey|OEJQU|AAAAG|GkXfo|UmFyI|N3q8r)/.test(start);
-        if (isFileBase64 || (value.length > 100 && /^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$/.test(value))) {
-            return { ischanged: true, value: value, type: 'buffer' };
+
+        // --- NATIVE HEX DETECTION ---
+        if (value.length % 2 === 0 && value.length > 64) {
+            const testHexBuf = Buffer.from(value, 'hex');
+            if (testHexBuf.toString('hex').toLowerCase() === value.toLowerCase()) {
+                return { ischanged: false, value: value.toUpperCase(), type: 'hex' };
+            }
+        }
+
+        // --- NATIVE BASE64 DETECTION ---
+        if (value.length % 4 === 0 && value.length > 64) {
+            if (!/[\s]/.test(value)) {
+                const testB64Buf = Buffer.from(value, 'base64');
+                if (testB64Buf.toString('base64') === value) {
+                    return { ischanged: false, value: value, type: 'base64' };
+                }
+            }
         }
     }
 
+    // Default Fallback
     return { ischanged: false, value: value, type: typeof value };
 }
-function toPrevious(value, explicitType = null) {
-    if (explicitType) {
-        switch (explicitType) {
-            case 'buffer':
-                return { ischanged: true, value: Buffer.from(value, 'base64') };
-            case 'date':
-                return { ischanged: true, value: new Date(value) };
-            case 'bigint':
-                return { ischanged: true, value: BigInt(value) };
-            case 'json':
-                try {
-                    return { ischanged: true, value: JSON.parse(value) };
-                } catch (e) {
-                    return { ischanged: false, value: value };
-                }
-            case 'special_num':
-                if (value === 'NaN') return { ischanged: true, value: NaN };
-                return { ischanged: true, value: parseFloat(value) };
-            case 'point':
-                // Restores to {x, y} which both PG and MySQL drivers can map
-                const coords = value.match(/-?\d+\.?\d*/g);
-                return { ischanged: true, value: { x: parseFloat(coords[0]), y: parseFloat(coords[1]) } };
-            default:
-                return { ischanged: false, value: value };
-        }
+function bufferToHex(bufferObj) {
+    if (!bufferObj) {
+        throw new Error("No data provided to conversion utility.");
     }
 
-    // Fallback detection (if no type provided)
-    if (typeof value !== 'string') return { ischanged: false, value: value };
+    // Normalize the input into a safe Node.js Buffer if it's a view/typed array
+    const buf = Buffer.isBuffer(bufferObj)
+        ? bufferObj
+        : Buffer.from(bufferObj.buffer, bufferObj.byteOffset, bufferObj.byteLength);
 
-    // Quick JSON detect
-    if ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))) {
-        try { return { ischanged: true, value: JSON.parse(value), type: 'json' }; } catch (e) { }
-    }
-
-    // ... (rest of previous auto-detection logic for buffer/date/bigint)
-    return { ischanged: false, value: value };
-}
-function toReadable(value) {
-    // 1. Binary (Buffer / Uint8Array)
-    if (Buffer.isBuffer(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
-        const buf = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-        return { ischanged: true, value: buf.toString('base64'), type: 'buffer' };
-    }
-
-    // 2. BigInt (MySQL/PG bigserial/bigint)
-    if (typeof value === 'bigint') {
-        return { ischanged: true, value: value.toString(), type: 'bigint' };
-    }
-
-    // 3. Dates
-    if (value instanceof Date) {
-        return { ischanged: true, value: value.toISOString(), type: 'date' };
-    }
-
-    // 4. PG JSON/JSONB or Array Columns
-    // PostgreSQL driver returns objects/arrays directly. We must stringify for JSON storage.
-    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-        // Check for Spatial (PostGIS/MySQL)
-        if (value.x !== undefined && value.y !== undefined) {
-            return { ischanged: true, value: `POINT(${value.x} ${value.y})`, type: 'point' };
-        }
-        // Standard JSONB / Array
-        return { ischanged: true, value: JSON.stringify(value), type: 'json' };
-    }
-
-    // 5. Special Numbers
-    if (typeof value === 'number' && (Number.isNaN(value) || !Number.isFinite(value))) {
-        return { ischanged: true, value: value.toString(), type: 'special_num' };
-    }
-
-    // 6. Existing Base64 Detection (Fallback)
-    if (typeof value === 'string') {
-        const start = value.substring(0, 16);
-        const isFileBase64 = /^(?:\/9j\/|iVBOR|R0lGO|UklGR|JVBER|UEsDB|ey|OEJQU|AAAAG|GkXfo|UmFyI|N3q8r)/.test(start);
-        if (isFileBase64 || (value.length > 100 && /^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$/.test(value))) {
-            return { ischanged: true, value: value, type: 'buffer' };
-        }
-    }
-
-    return { ischanged: false, value: value, type: typeof value };
-}
-function toPrevious(value, explicitType = null) {
-    if (explicitType) {
-        switch (explicitType) {
-            case 'buffer':
-                return { ischanged: true, value: Buffer.from(value, 'base64') };
-            case 'date':
-                return { ischanged: true, value: new Date(value) };
-            case 'bigint':
-                return { ischanged: true, value: BigInt(value) };
-            case 'json':
-                try {
-                    return { ischanged: true, value: JSON.parse(value) };
-                } catch (e) {
-                    return { ischanged: false, value: value };
-                }
-            case 'special_num':
-                if (value === 'NaN') return { ischanged: true, value: NaN };
-                return { ischanged: true, value: parseFloat(value) };
-            case 'point':
-                // Restores to {x, y} which both PG and MySQL drivers can map
-                const coords = value.match(/-?\d+\.?\d*/g);
-                return { ischanged: true, value: { x: parseFloat(coords[0]), y: parseFloat(coords[1]) } };
-            default:
-                return { ischanged: false, value: value };
-        }
-    }
-
-    // Fallback detection (if no type provided)
-    if (typeof value !== 'string') return { ischanged: false, value: value };
-
-    // Quick JSON detect
-    if ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))) {
-        try { return { ischanged: true, value: JSON.parse(value), type: 'json' }; } catch (e) { }
-    }
-
-    // ... (rest of previous auto-detection logic for buffer/date/bigint)
-    return { ischanged: false, value: value };
+    return buf.toString('hex').toUpperCase();
 }
 function getmemorypercent() {
     const stats = v8.getHeapStatistics();
