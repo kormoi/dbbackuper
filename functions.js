@@ -102,53 +102,6 @@ async function detectDatabase(config) {
     }
   }
 }
-async function getMySQLVersion(config) {
-  const connection = await mysql.createConnection(config);
-  try {
-    const [rows] = await connection.execute('SELECT VERSION() AS version');
-    const version = rows[0].version;
-    console.log("Mysql database version is: ", cstyler.green(version));
-    return version;
-  } catch (err) {
-    console.error(err.message);
-    return null;
-  } finally {
-    await connection.end();
-  }
-}
-async function isMySQL578OrAbove(config) {
-  const versionStr = await getMySQLVersion(config); // e.g., '5.7.9-log' or '8.0.34'
-  // Extract numeric version
-  const match = versionStr.match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return false;
-  const [major, minor, patch] = match.slice(1).map(Number);
-
-  if (major > 5) return true;
-  if (major < 5) return false;
-  if (minor > 7) return true;
-  if (minor < 7) return false;
-  // major==5, minor==7
-  return patch >= 8;
-}
-async function getCharsetAndCollations(config) {
-  let conn;
-  try {
-    conn = await mysql.createConnection(config);
-
-    const [charsetRows] = await conn.query("SHOW CHARACTER SET");
-    const characterSets = charsetRows.map(row => row.Charset);
-
-    const [collationRows] = await conn.query("SHOW COLLATION");
-    const collations = collationRows.map(row => row.Collation);
-
-    await conn.end();
-    return { characterSets, collations };
-  } catch (err) {
-    return null;
-  } finally {
-    if (conn) await conn.end();
-  }
-}
 async function isCharsetCollationValid(config, charset, collation) {
   let connection;
 
@@ -2272,11 +2225,8 @@ module.exports = {
   isSameArray,
   hasArray,
   detectDatabase,
-  getMySQLVersion,
-  isMySQL578OrAbove,
   isValidDbConfig,
   isMySQLDatabase,
-  getCharsetAndCollations,
   isCharsetCollationValid,
   getDatabaseSizeInMB,
   getMySQLEngines,

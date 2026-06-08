@@ -7,6 +7,7 @@ const rows = require("./rows");
 const cstyler = require('cstyler');
 const dbtasker = require("dbtasker");
 const upload = require("./upload");
+const getmtd = require("./getmetadata");
 
 
 
@@ -88,7 +89,7 @@ module.exports = async function (allconfig, path) {
       console.error("My SQL database is required to run ", moduleName, " module. Please install mysql2 to use this module. To install run this code on the terminal > npm install mysql2");
       return;
     }
-    const isvalidmysqlversion = await fncs.isMySQL578OrAbove(config);
+    const isvalidmysqlversion = await getmtd.isMySQL578OrAbove(config);
     if (isvalidmysqlversion === false) {
       console.error("My SQL version 5.7.8 or above is required. Please check if you have installed mysql2. To install: npm install mysql2");
       return;
