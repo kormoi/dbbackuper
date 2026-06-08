@@ -1063,36 +1063,6 @@ async function getColumnNames(config, databaseName, tableName) {
     if (connection) await connection.end(); // Ensure connection is closed
   }
 }
-async function getDatabaseCharsetAndCollation(config, databaseName) {
-  let connection;
-  try {
-    // Connect to the server (not to a specific database)
-    connection = await mysql.createConnection(config);
-
-    // Query the information_schema for the given database
-    const [rows] = await connection.execute(
-      `SELECT DEFAULT_CHARACTER_SET_NAME AS characterSet, DEFAULT_COLLATION_NAME AS collation 
-       FROM information_schema.SCHEMATA 
-       WHERE SCHEMA_NAME = ?`,
-      [databaseName]
-    );
-
-    if (rows.length === 0) {
-      console.error(`Database "${databaseName}" not found.`);
-      return null;
-    }
-
-    return {
-      characterSet: rows[0].characterSet,
-      collation: rows[0].collation,
-    };
-  } catch (err) {
-    console.error("Error fetching charset/collation:", err.message);
-    return null;
-  } finally {
-    if (connection) await connection.end();
-  }
-}
 async function getTableMetadata(config, databaseName, tableName) {
   let connection;
   try {
@@ -2329,7 +2299,6 @@ module.exports = {
   JoinJsonObjects,
   getTableNames,
   getColumnNames,
-  getDatabaseCharsetAndCollation,
   getTableMetadata,
   getColumnDetails,
   inspectColumnConstraint,

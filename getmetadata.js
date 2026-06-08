@@ -1,10 +1,41 @@
 const fncs = require('./functions');
 const cstyler = require('cstyler');
+const mysql = require('mysql2/promise');
 
 
 
 const defaultdb = ['information_schema', 'mysql', 'performance_schema', 'sys', 'world'];
 
+async function getDatabaseCharsetAndCollation(config, databaseName) {
+  let connection;
+  try {
+    // Connect to the server (not to a specific database)
+    connection = await mysql.createConnection(config);
+
+    // Query the information_schema for the given database
+    const [rows] = await connection.execute(
+      `SELECT DEFAULT_CHARACTER_SET_NAME AS characterSet, DEFAULT_COLLATION_NAME AS collation 
+       FROM information_schema.SCHEMATA 
+       WHERE SCHEMA_NAME = ?`,
+      [databaseName]
+    );
+
+    if (rows.length === 0) {
+      console.error(`Database "${databaseName}" not found.`);
+      return null;
+    }
+
+    return {
+      characterSet: rows[0].characterSet,
+      collation: rows[0].collation,
+    };
+  } catch (err) {
+    console.error("Error fetching charset/collation:", err.message);
+    return null;
+  } finally {
+    if (connection) await connection.end();
+  }
+}
 // require config and database names that you want to backup
 // keep it empty to backup all databases that are not default
 async function getmetadata(config, dbs = []) {
@@ -49,7 +80,7 @@ async function getmetadata(config, dbs = []) {
                 return null;
             }
             // lets get database character set and collate
-            const getcarcol = await fncs.getDatabaseCharsetAndCollation(config, dbname);
+            const getcarcol = await getDatabaseCharsetAndCollation(config, dbname);
             if (getcarcol === null) {
                 console.warn(`Could not retrieve character set or collate for database "${dbname}". Skipping this database.`)
             } else if (fncs.isJsonObject(getcarcol)) {
@@ -127,7 +158,105 @@ async function getmetadata(config, dbs = []) {
         return null;
     }
 }
+async function getColumnMetadataAndSize(config, databaseName, tableName, offset) {
+    let connection;
+    try {
+        connection = await mysql.createConnection(config);
 
+        // 1. Get Schema Info
+        const [schemaInfo] = await connection.execute(
+            `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE 
+             FROM INFORMATION_SCHEMA.COLUMNS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+            [databaseName, tableName]
+        );
+
+        // 2. Optimized Size Query
+        // We use BIT_LENGTH / 8 as a fallback and COALESCE to catch NULLs
+        const sizeCalculations = schemaInfo.map(col => {
+            return `COALESCE(OCTET_LENGTH(\`${col.COLUMN_NAME}\`), 0) AS \`${col.COLUMN_NAME}_size\``;
+        }).join(', ');
+
+        const [sizeData] = await connection.execute(
+            `SELECT ${sizeCalculations} 
+             FROM \`${databaseName}\`.\`${tableName}\` 
+             LIMIT 1 OFFSET ${Number(offset)}`
+        );
+
+        if (sizeData.length === 0) return false; // No row found at this offset
+
+        // 3. Map Results
+        return schemaInfo.map(col => ({
+            column: col.COLUMN_NAME,
+            type: col.DATA_TYPE,
+            fullType: col.COLUMN_TYPE,
+            sizeInBytes: sizeData[0][`${col.COLUMN_NAME}_size`]
+        }));
+
+    } finally {
+        if (connection) await connection.end();
+    }
+}
+async function getTableSchemaLayout(config, databaseName, tableName) {
+    let connection;
+    try {
+        connection = await mysql.createConnection(config);
+
+        const [schemaInfo] = await connection.execute(
+            `SELECT 
+                COLUMN_NAME, 
+                DATA_TYPE, 
+                CHARACTER_MAXIMUM_LENGTH, 
+                NUMERIC_PRECISION, 
+                NUMERIC_SCALE,
+                COLUMN_TYPE
+             FROM INFORMATION_SCHEMA.COLUMNS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+             ORDER BY ORDINAL_POSITION`,
+            [databaseName, tableName]
+        );
+
+        // 🚨 CRITICAL FIX: If the table doesn't exist, schemaInfo length is 0
+        if (schemaInfo.length === 0) {
+            console.error(cstyler.red(`❌ Table "${tableName}" does not exist in database "${databaseName}".`));
+            return false; // Return false to indicate the table doesn't exist, instead of throwing an error
+        }
+
+        const schemaMap = {};
+
+        for (const col of schemaInfo) {
+            const type = col.DATA_TYPE.toUpperCase();
+            schemaMap[col.COLUMN_NAME] = { type };
+
+            if (col.CHARACTER_MAXIMUM_LENGTH !== null) {
+                schemaMap[col.COLUMN_NAME].value = col.CHARACTER_MAXIMUM_LENGTH;
+            }
+            else if (col.NUMERIC_PRECISION !== null && col.NUMERIC_SCALE !== null && col.NUMERIC_SCALE > 0) {
+                schemaMap[col.COLUMN_NAME].value = [col.NUMERIC_PRECISION, col.NUMERIC_SCALE];
+            }
+            else if (col.NUMERIC_PRECISION !== null && ['INT', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT'].includes(type)) {
+                schemaMap[col.COLUMN_NAME].value = col.NUMERIC_PRECISION;
+            }
+            else if (type === 'ENUM' || type === 'SET') {
+                const cleanStr = col.COLUMN_TYPE.substring(type.length + 1, col.COLUMN_TYPE.length - 1);
+                schemaMap[col.COLUMN_NAME].value = cleanStr.split(',').map(v => v.replace(/'/g, ''));
+            }
+        }
+
+        return schemaMap;
+
+    } catch (error) {
+        // This will now catch the "Table does not exist" error cleanly
+        console.error(`❌ Failed parsing schema layout:`, error.message);
+        return null; // Return null to indicate failure, instead of throwing further
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+}
 module.exports = {
-    getmetadata
+    getmetadata,
+    getColumnMetadataAndSize,
+    getTableSchemaLayout,
 }

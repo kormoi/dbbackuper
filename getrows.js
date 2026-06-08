@@ -6,8 +6,10 @@ const fs = require('fs').promises;
 const { createReadStream, createWriteStream, existsSync } = require('fs');
 const { pipeline } = require('stream/promises');
 const path = require('path');
-const filefunctions = require('./filefunctions');
 const { count } = require('console');
+const filefunctions = require('./filefunctions');
+const getmtd = require("./getmetadata");
+
 
 
 
@@ -231,103 +233,7 @@ function toBuffer(input) {
 function restoreSpecialNumber(savedData) {
     return parseFloat(savedData);
 }
-async function getColumnMetadataAndSize(config, databaseName, tableName, offset) {
-    let connection;
-    try {
-        connection = await mysql.createConnection(config);
 
-        // 1. Get Schema Info
-        const [schemaInfo] = await connection.execute(
-            `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE 
-             FROM INFORMATION_SCHEMA.COLUMNS 
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
-            [databaseName, tableName]
-        );
-
-        // 2. Optimized Size Query
-        // We use BIT_LENGTH / 8 as a fallback and COALESCE to catch NULLs
-        const sizeCalculations = schemaInfo.map(col => {
-            return `COALESCE(OCTET_LENGTH(\`${col.COLUMN_NAME}\`), 0) AS \`${col.COLUMN_NAME}_size\``;
-        }).join(', ');
-
-        const [sizeData] = await connection.execute(
-            `SELECT ${sizeCalculations} 
-             FROM \`${databaseName}\`.\`${tableName}\` 
-             LIMIT 1 OFFSET ${Number(offset)}`
-        );
-
-        if (sizeData.length === 0) return false; // No row found at this offset
-
-        // 3. Map Results
-        return schemaInfo.map(col => ({
-            column: col.COLUMN_NAME,
-            type: col.DATA_TYPE,
-            fullType: col.COLUMN_TYPE,
-            sizeInBytes: sizeData[0][`${col.COLUMN_NAME}_size`]
-        }));
-
-    } finally {
-        if (connection) await connection.end();
-    }
-}
-async function getTableSchemaLayout(config, databaseName, tableName) {
-    let connection;
-    try {
-        connection = await mysql.createConnection(config);
-
-        const [schemaInfo] = await connection.execute(
-            `SELECT 
-                COLUMN_NAME, 
-                DATA_TYPE, 
-                CHARACTER_MAXIMUM_LENGTH, 
-                NUMERIC_PRECISION, 
-                NUMERIC_SCALE,
-                COLUMN_TYPE
-             FROM INFORMATION_SCHEMA.COLUMNS 
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY ORDINAL_POSITION`,
-            [databaseName, tableName]
-        );
-
-        // 🚨 CRITICAL FIX: If the table doesn't exist, schemaInfo length is 0
-        if (schemaInfo.length === 0) {
-            console.error(cstyler.red(`❌ Table "${tableName}" does not exist in database "${databaseName}".`));
-            return false; // Return false to indicate the table doesn't exist, instead of throwing an error
-        }
-
-        const schemaMap = {};
-
-        for (const col of schemaInfo) {
-            const type = col.DATA_TYPE.toUpperCase();
-            schemaMap[col.COLUMN_NAME] = { type };
-
-            if (col.CHARACTER_MAXIMUM_LENGTH !== null) {
-                schemaMap[col.COLUMN_NAME].value = col.CHARACTER_MAXIMUM_LENGTH;
-            }
-            else if (col.NUMERIC_PRECISION !== null && col.NUMERIC_SCALE !== null && col.NUMERIC_SCALE > 0) {
-                schemaMap[col.COLUMN_NAME].value = [col.NUMERIC_PRECISION, col.NUMERIC_SCALE];
-            }
-            else if (col.NUMERIC_PRECISION !== null && ['INT', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT'].includes(type)) {
-                schemaMap[col.COLUMN_NAME].value = col.NUMERIC_PRECISION;
-            }
-            else if (type === 'ENUM' || type === 'SET') {
-                const cleanStr = col.COLUMN_TYPE.substring(type.length + 1, col.COLUMN_TYPE.length - 1);
-                schemaMap[col.COLUMN_NAME].value = cleanStr.split(',').map(v => v.replace(/'/g, ''));
-            }
-        }
-
-        return schemaMap;
-
-    } catch (error) {
-        // This will now catch the "Table does not exist" error cleanly
-        console.error(`❌ Failed parsing schema layout:`, error.message);
-        return null; // Return null to indicate failure, instead of throwing further
-    } finally {
-        if (connection) {
-            await connection.end();
-        }
-    }
-}
 async function deleteRowByOffset(dbConfig, dbName, tableName, offset) {
     let pool = null;
 
@@ -483,7 +389,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                 break;
             }
             // Lets check available memory and row size if we can continue or not
-            const rowmetadata = await getColumnMetadataAndSize(config, databaseName, tableName, rowoffset);
+            const rowmetadata = await getmtd.getColumnMetadataAndSize(config, databaseName, tableName, rowoffset);
             if (rowmetadata === false) {
                 // no more row left to fetch
                 isfinished = true;
@@ -712,7 +618,7 @@ async function makeDataReadable(config, data) {
                 data[db][table] = []; // Clear original data to free memory as we will process row by row
                 if (!savableData[db].hasOwnProperty(table)) savableData[db][table] = {};
                 // lets get the metadata of this table to check which column is binary and which column is json
-                const getmetadata = getTableSchemaLayout(config, db, table);
+                const getmetadata = getmtd.getTableSchemaLayout(config, db, table);
                 if (!fncs.isJsonObject(getmetadata)) {
                     if (getmetadata === null) {
                         return null;
@@ -894,8 +800,6 @@ module.exports = {
     getallrows,
     deleteRowByOffset,
     getRowsUntilMemoryLimit,
-    getColumnMetadataAndSize,
-    getTableSchemaLayout,
     getSingleRowAsJson,
     toReadable,
 }
