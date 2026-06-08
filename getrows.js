@@ -11,8 +11,35 @@ const { count } = require('console');
 
 
 
-
-
+function checkMemoryLimit(value = 90, memory = 200) {
+    const memStatus = filefunctions.getMemoryHeaps();
+    if (memStatus.percentage > value || memStatus.availableMB < memory) {
+        return false; // Memory limit reached
+    }
+    return true; // Memory is within limits
+}
+const validJsonTypes = [
+    "string",   // e.g., "Hello World" (Must use double quotes)
+    "number",   // e.g., 42, -12, or 3.14159 (Standard integers and floats)
+    "boolean",  // e.g., true or false
+    "object",   // e.g., { "key": "value" } (Nested key-value pairs)
+    "array",    // e.g., [1, 2, "three"] (Ordered lists of values)
+    "null"      // e.g., null (Represents an empty or intentional blank value)
+];
+const binaryTypes = [
+    "BINARY",
+    "VARBINARY",
+    "VARBINARY(MAX)",
+    "BYTEA",
+    "TINYBLOB",
+    "BLOB",
+    "MEDIUMBLOB",
+    "LONGBLOB",
+    "IMAGE",
+    "RAW",
+    "LONG RAW",
+    "BFILE"
+];
 function toReadable(value) {
     // 1. ADVANCED SPATIAL & GEOMETRY LAYER (MySQL / PG Support)
     if (value !== null && typeof value === 'object') {
@@ -23,60 +50,50 @@ function toReadable(value) {
         }
 
         // --- MySQL Spatial Buffer Parser ---
-        // MySQL driver emits geometry as a Buffer, but it prefixes a 4-byte SRID header before the WKB.
         if (Buffer.isBuffer(value) && value.length > 4) {
             try {
-                // Slice off the first 4 bytes (MySQL's internal SRID tracking header) to get the clean WKB
                 const wkbBuffer = value.slice(4);
-
-                // Parse using the built-in wkx library
                 const geometry = wkx.Geometry.parse(wkbBuffer);
-
-                // Convert it dynamically to a clean readable string (e.g., "POLYGON((...))", "LINESTRING(...)")
                 const wktString = geometry.toWkt();
-
-                // Extract the geometry type lower-cased ('point', 'polygon', 'geometrycollection')
                 const geomType = geometry.constructor.name.toLowerCase();
 
                 return { ischanged: true, value: wktString, type: geomType };
             } catch (e) {
-                // If it fails parsing as a geometry data format, drop it safely to the raw buffer block below
+                // Not geometry data, fall through cleanly
             }
         }
     }
-    // 1. Binary (Buffer / Uint8Array) -> Kept purely intact as a raw buffer object
+
+    // 2. Binary Layer -> Converted to Base64 so it is 100% safe for a JSON file!
     if (Buffer.isBuffer(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
         const buf = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-        return { ischanged: true, value: buf, type: 'buffer' };
+
+        // FIX: Converting to Base64 prevents JSON stringify from corrupting/bloating the buffer
+        return { ischanged: true, value: buf.toString('base64'), type: 'buffer_base64' };
     }
 
-    // 2. BigInt (MySQL/PG bigserial/bigint)
+    // 3. BigInt
     if (typeof value === 'bigint') {
-        return { ischanged: true, value: value.toString(), type: 'bigint' };
+        return value.toString();
     }
 
-    // 3. Dates
+    // 4. Dates
     if (value instanceof Date) {
         return { ischanged: true, value: value.toISOString(), type: 'date' };
     }
 
-    // 4. PG JSON/JSONB or Array Columns
-    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-        if (value.x !== undefined && value.y !== undefined) {
-            return { ischanged: true, value: `POINT(${value.x} ${value.y})`, type: 'point' };
-        }
-        return { ischanged: true, value: JSON.stringify(value), type: 'json' };
-    }
-
-    // 5. Special Numbers
+    // 5. Special Numbers (NaN, Infinity, -Infinity)
     if (typeof value === 'number' && (Number.isNaN(value) || !Number.isFinite(value))) {
         return { ischanged: true, value: value.toString(), type: 'special_num' };
     }
 
-    // 6. Direct Native Hex & Base64 Detection Layer
-    if (typeof value === 'string') {
+    // 6. PG JSON/JSONB or Array Columns (Executed after Dates & Buffers are safely isolated)
+    if (value !== null && typeof value === 'object') {
+        return { ischanged: true, value: JSON.stringify(value), type: 'json' };
+    }
 
-        // --- NATIVE HEX DETECTION ---
+    // 7. Direct Native Hex & Base64 Detection Layer
+    if (typeof value === 'string') {
         if (value.length % 2 === 0 && value.length > 64) {
             const testHexBuf = Buffer.from(value, 'hex');
             if (testHexBuf.toString('hex').toLowerCase() === value.toLowerCase()) {
@@ -84,7 +101,6 @@ function toReadable(value) {
             }
         }
 
-        // --- NATIVE BASE64 DETECTION ---
         if (value.length % 4 === 0 && value.length > 64) {
             if (!/[\s]/.test(value)) {
                 const testB64Buf = Buffer.from(value, 'base64');
@@ -95,8 +111,8 @@ function toReadable(value) {
         }
     }
 
-    // Default Fallback
-    return { ischanged: false, value: value, type: typeof value };
+    // 8. Default Fallback (Strings, standard Numbers, Booleans, Nulls)
+    return value;
 }
 function bufferToHex(bufferObj) {
     if (!bufferObj) {
@@ -110,14 +126,259 @@ function bufferToHex(bufferObj) {
 
     return buf.toString('hex').toUpperCase();
 }
-function getmemorypercent() {
-    const stats = v8.getHeapStatistics();
-    const heapLimit = stats.heap_size_limit / 1024 / 1024; // Convert to MB
-    const usedHeap = stats.used_heap_size / 1024 / 1024;
-    return (usedHeap * 100 / heapLimit);
+function textBufferToString(bufferObj) {
+    try {
+        // 1. Guard clause: Return null if no data is provided
+        if (!bufferObj) {
+            return null;
+        }
+
+        // 2. Normalize into a standard Node.js Buffer
+        const buf = Buffer.isBuffer(bufferObj)
+            ? bufferObj
+            : Buffer.from(bufferObj.buffer, bufferObj.byteOffset, bufferObj.byteLength);
+
+        // 3. Text Validation Sniffer
+        // Look at the first 100 bytes. If we find invisible binary control codes,
+        // it means this is a real file (like an image or archive), NOT plain text.
+        const sampleSize = Math.min(buf.length, 100);
+        let isText = true;
+
+        for (let i = 0; i < sampleSize; i++) {
+            const byte = buf[i];
+
+            // Control character bounds (Bypasses valid text whitespaces: Tab \t, Line Feed \n, Carriage Return \r)
+            if (byte < 9 || (byte > 13 && byte < 32)) {
+                isText = false;
+                break;
+            }
+        }
+
+        // 4. Conditional Output
+        if (isText) {
+            return buf.toString('utf8'); // Safely unpacks "Hi how are you"
+        }
+
+        return null; // Returns null because it's a true binary file (PNG, ZIP, etc.)
+
+    } catch (error) {
+        // Catches unexpected issues (e.g., passing numbers or objects that aren't buffers)
+        return null;
+    }
+}
+function toBuffer(input) {
+    // 1. Quick validation guard for missing values
+    if (input === null || input === undefined) {
+        return false;
+    }
+
+    // 2. Wrap everything in a try block to catch unpredictable runtime engine failures
+    try {
+        // If it's already a Buffer, return it as-is
+        if (Buffer.isBuffer(input)) {
+            return input;
+        }
+
+        // Handle TypedArrays / ArrayBuffers safely (e.g., Uint8Array)
+        if (input && input.buffer && input.byteLength !== undefined) {
+            return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+        }
+
+        // Handle Strings (Detect Hex, Base64, or fallback to plain UTF-8 text)
+        if (typeof input === 'string') {
+            const cleanStr = input.trim();
+            if (cleanStr === '') return false;
+
+            // Check for Hex format
+            if (/^[0-9a-fA-F]+$/.test(cleanStr) && cleanStr.length % 2 === 0) {
+                return Buffer.from(cleanStr, 'hex');
+            }
+
+            // Check for Base64 format
+            if (/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(cleanStr)) {
+                return Buffer.from(cleanStr, 'base64');
+            }
+
+            // Standard text fallback
+            return Buffer.from(input, 'utf8');
+        }
+
+        // Handle Arrays (Checks if it's an array of raw bytes)
+        if (Array.isArray(input)) {
+            if (input.length === 0) return false;
+            return Buffer.from(input);
+        }
+
+        // Handle Objects (Converts literal objects into a minified JSON text block)
+        if (typeof input === 'object') {
+            const jsonString = JSON.stringify(input);
+            return Buffer.from(jsonString, 'utf8');
+        }
+
+        // Handle Numbers, Booleans, and BigInts safely by converting to text explicitly
+        if (typeof input === 'number' || typeof input === 'boolean' || typeof input === 'bigint') {
+            return Buffer.from(String(input), 'utf8'); // Using String(input) is safer than input.toString()
+        }
+
+    } catch (error) {
+        // Log the error internally if needed: console.error("Buffer conversion failed:", error.message);
+        return false; // Fail gracefully instead of crashing the server
+    }
+
+    // If it's a Function, Symbol, or unhandled type
+    return false;
+}
+function restoreSpecialNumber(savedData) {
+    return parseFloat(savedData);
+}
+async function getColumnMetadataAndSize(config, databaseName, tableName, offset) {
+    let connection;
+    try {
+        connection = await mysql.createConnection(config);
+
+        // 1. Get Schema Info
+        const [schemaInfo] = await connection.execute(
+            `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE 
+             FROM INFORMATION_SCHEMA.COLUMNS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+            [databaseName, tableName]
+        );
+
+        // 2. Optimized Size Query
+        // We use BIT_LENGTH / 8 as a fallback and COALESCE to catch NULLs
+        const sizeCalculations = schemaInfo.map(col => {
+            return `COALESCE(OCTET_LENGTH(\`${col.COLUMN_NAME}\`), 0) AS \`${col.COLUMN_NAME}_size\``;
+        }).join(', ');
+
+        const [sizeData] = await connection.execute(
+            `SELECT ${sizeCalculations} 
+             FROM \`${databaseName}\`.\`${tableName}\` 
+             LIMIT 1 OFFSET ${Number(offset)}`
+        );
+
+        if (sizeData.length === 0) return false; // No row found at this offset
+
+        // 3. Map Results
+        return schemaInfo.map(col => ({
+            column: col.COLUMN_NAME,
+            type: col.DATA_TYPE,
+            fullType: col.COLUMN_TYPE,
+            sizeInBytes: sizeData[0][`${col.COLUMN_NAME}_size`]
+        }));
+
+    } finally {
+        if (connection) await connection.end();
+    }
+}
+async function getTableSchemaLayout(config, databaseName, tableName) {
+    let connection;
+    try {
+        connection = await mysql.createConnection(config);
+
+        const [schemaInfo] = await connection.execute(
+            `SELECT 
+                COLUMN_NAME, 
+                DATA_TYPE, 
+                CHARACTER_MAXIMUM_LENGTH, 
+                NUMERIC_PRECISION, 
+                NUMERIC_SCALE,
+                COLUMN_TYPE
+             FROM INFORMATION_SCHEMA.COLUMNS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+             ORDER BY ORDINAL_POSITION`,
+            [databaseName, tableName]
+        );
+
+        // 🚨 CRITICAL FIX: If the table doesn't exist, schemaInfo length is 0
+        if (schemaInfo.length === 0) {
+            console.error(cstyler.red(`❌ Table "${tableName}" does not exist in database "${databaseName}".`));
+            return false; // Return false to indicate the table doesn't exist, instead of throwing an error
+        }
+
+        const schemaMap = {};
+
+        for (const col of schemaInfo) {
+            const type = col.DATA_TYPE.toUpperCase();
+            schemaMap[col.COLUMN_NAME] = { type };
+
+            if (col.CHARACTER_MAXIMUM_LENGTH !== null) {
+                schemaMap[col.COLUMN_NAME].value = col.CHARACTER_MAXIMUM_LENGTH;
+            }
+            else if (col.NUMERIC_PRECISION !== null && col.NUMERIC_SCALE !== null && col.NUMERIC_SCALE > 0) {
+                schemaMap[col.COLUMN_NAME].value = [col.NUMERIC_PRECISION, col.NUMERIC_SCALE];
+            }
+            else if (col.NUMERIC_PRECISION !== null && ['INT', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT'].includes(type)) {
+                schemaMap[col.COLUMN_NAME].value = col.NUMERIC_PRECISION;
+            }
+            else if (type === 'ENUM' || type === 'SET') {
+                const cleanStr = col.COLUMN_TYPE.substring(type.length + 1, col.COLUMN_TYPE.length - 1);
+                schemaMap[col.COLUMN_NAME].value = cleanStr.split(',').map(v => v.replace(/'/g, ''));
+            }
+        }
+
+        return schemaMap;
+
+    } catch (error) {
+        // This will now catch the "Table does not exist" error cleanly
+        console.error(`❌ Failed parsing schema layout:`, error.message);
+        return null; // Return null to indicate failure, instead of throwing further
+    } finally {
+        if (connection) {
+            await connection.end();
+        }
+    }
+}
+async function deleteRowByOffset(dbConfig, dbName, tableName, offset) {
+    let pool = null;
+
+    try {
+        pool = mysql.createPool({
+            ...dbConfig,
+            database: dbName,
+            waitForConnections: true,
+            connectionLimit: 1
+        });
+
+        const safeTableName = tableName.replace(/`/g, '');
+
+        // CHANGE: Use pool.query() instead of pool.execute() to prevent prepared statement errors
+        const selectQuery = `SELECT * FROM \`${safeTableName}\` LIMIT 1 OFFSET ?`;
+        const [targetRows] = await pool.query(selectQuery, [Number(offset)]);
+
+        // If no row exists at that offset index, exit early gracefully
+        if (targetRows.length === 0) {
+            return false;
+        }
+
+        const targetRow = targetRows[0];
+        const columns = Object.keys(targetRow);
+
+        // Build a dynamic WHERE clause matching all column values of that specific row
+        const whereConditions = columns.map(col => `\`${col}\` <=> ?`).join(' AND ');
+        const queryValues = Object.values(targetRow);
+
+        const deleteQuery = `
+            DELETE FROM \`${safeTableName}\` 
+            WHERE ${whereConditions} 
+            LIMIT 1
+        `;
+
+        // Using pool.query() here ensures null-safe matches go through smoothly
+        const [result] = await pool.query(deleteQuery, queryValues);
+        return result.affectedRows > 0;
+
+    } catch (error) {
+        console.error(`❌ Error deleting row at offset ${offset} from [${tableName}]:`, error.message);
+        throw error;
+
+    } finally {
+        if (pool) {
+            await pool.end();
+        }
+    }
 }
 // Fetch rows in chunks until memory limit is approached
-async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOffset = 0, thresholdPercent = 70) {
+async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOffset = 0, thresholdPercent = 70, chunkSize = 1000) {
     let connection;
     let allData = [];
     let currentOffset = startOffset;
@@ -132,7 +393,6 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
         );
         const totalRows = countResult[0].total;
 
-        const chunkSize = 2000;
         const heapLimit = v8.getHeapStatistics().heap_size_limit;
         const memoryThreshold = heapLimit * (thresholdPercent / 100); // threshold
 
@@ -197,43 +457,96 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
         if (connection) await connection.end();
     }
 }
-async function getColumnMetadataAndSize(config, databaseName, tableName, offset) {
-    let connection;
+async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, offset = 0, chunkSize = 1000) {
     try {
-        connection = await mysql.createConnection(config);
+        let data = [];
+        let errorcount = 0;
+        let isfinished = true;
+        let rowoffset = offset;
+        let status = "completed";
+        let errorLevel = 0;
+        let rowSizeMB = 0;
+        let rowCount = 0;
+        // Lets get rows one by one
+        let keepFetching = true;
+        while (keepFetching) {
+            if (rowCount >= chunkSize) {
+                isfinished = false;
+                status = "chunk_limit";
+                break;
+            }
+            const memStatus = filefunctions.getMemoryHeaps();
+            if (memStatus.percentage > 80 || memStatus.availableMB < 200) {
+                console.warn(`Memory limit reached while fetching single row at offset: ${rowoffset}`);
+                status = "memory_limit";
+                isfinished = false;
+                break;
+            }
+            // Lets check available memory and row size if we can continue or not
+            const rowmetadata = await getColumnMetadataAndSize(config, databaseName, tableName, rowoffset);
+            if (rowmetadata === false) {
+                // no more row left to fetch
+                isfinished = true;
+                status = "completed";
+                break;
+            } else if (Array.isArray(rowmetadata)) {
+                rowSizeMB = 0;
+                for (const col of rowmetadata) {
+                    // as function will return an array of data
+                    rowSizeMB += col.sizeInBytes / (1024 * 1024);
+                }
+                const availableMB = filefunctions.getMemoryHeaps(); // Keep a 200MB buffer to prevent hitting critical limits
+                if (rowSizeMB > (availableMB.availableMB - 200)) {
+                    status = "memory_limit";
+                    isfinished = false;
+                    break;
+                } else if (rowSizeMB > (availableMB.limitMB - 200)) {
+                    /**
+                     * if row size is bigger than total heap size
+                     * in future update will will try to save the file directly from database to folder
+                     * but right now we are good to go
+                     */
+                    console.error(`${cstyler.purple("Database:")} ${cstyler.blue(databaseName)}-${cstyler.purple("Table:")} ${cstyler.blue(tableName)}-${cstyler.purple("Offset:")} ${cstyler.yellow(rowoffset)} ${cstyler.red(` - Row size (${rowSizeMB.toFixed(2)} MB) exceeds total heap limit (${availableMB.limitMB} MB). We are skipping.`)}`);
+                    continue; // Skip this row and try the next one, or implement a fallback strategy
+                }
+            } else {
+                // if there is any error we will stop the process and return the data we have
+                if (errorcount >= 3) {
+                    console.error(`${cstyler.purple("Database:")} ${cstyler.blue(databaseName)}-${cstyler.purple("Table:")} ${cstyler.blue(tableName)}-${cstyler.purple("Offset:")} ${cstyler.yellow(rowoffset)} ${cstyler.red("Error fetching column metadata for single row. Aborting.")}`);
+                    status = "error";
+                    errorLevel = 2;
+                    isfinished = false;
+                    break;
+                }
+                errorcount++;
+                continue; // Try fetching the same row again
+            }
+            // If we are here that means we can fetch the row safely without hitting memory limits
+            const row = await getSingleRowAsJson(config, databaseName, tableName, rowoffset);
+            if (row === false) {
+                isfinished = true;
+                status = "completed";
+                break;
+            } else if (row === null) {
+                if (errorcount >= 3) {
+                    console.error(`${cstyler.purple("Database:")} ${cstyler.blue(databaseName)}-${cstyler.purple("Table:")} ${cstyler.blue(tableName)}-${cstyler.purple("Offset:")} ${cstyler.yellow(rowoffset)} ${cstyler.red("Repeated errors fetching single row. Aborting.")}`);
+                    // before break lets check row size and available memory size if we can continue or not
+                    status = "error";
+                    isfinished = false;
+                    break; // Stop trying after 3 consecutive errors
+                }
+                errorcount++;
+                continue; // Try fetching the same row again
+            }
+            data.push(row);
+            rowoffset++;
+            rowCount++;
+        }
+        return { isfinished: isfinished, status: status, offset: rowoffset, data: data, count: rowCount };
 
-        // 1. Get Schema Info
-        const [schemaInfo] = await connection.execute(
-            `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE 
-             FROM INFORMATION_SCHEMA.COLUMNS 
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
-            [databaseName, tableName]
-        );
-
-        // 2. Optimized Size Query
-        // We use BIT_LENGTH / 8 as a fallback and COALESCE to catch NULLs
-        const sizeCalculations = schemaInfo.map(col => {
-            return `COALESCE(OCTET_LENGTH(\`${col.COLUMN_NAME}\`), 0) AS \`${col.COLUMN_NAME}_size\``;
-        }).join(', ');
-
-        const [sizeData] = await connection.execute(
-            `SELECT ${sizeCalculations} 
-             FROM \`${databaseName}\`.\`${tableName}\` 
-             LIMIT 1 OFFSET ${Number(offset)}`
-        );
-
-        if (sizeData.length === 0) return { error: "No row found." };
-
-        // 3. Map Results
-        return schemaInfo.map(col => ({
-            column: col.COLUMN_NAME,
-            type: col.DATA_TYPE,
-            fullType: col.COLUMN_TYPE,
-            sizeInBytes: sizeData[0][`${col.COLUMN_NAME}_size`]
-        }));
-
-    } finally {
-        if (connection) await connection.end();
+    } catch (err) {
+        console.error("Error fetching single row:", err.message);
+        return null;
     }
 }
 async function getSingleRowAsJson(config, databaseName, tableName, offset) {
@@ -296,29 +609,170 @@ async function getSingleRowAsJson(config, databaseName, tableName, offset) {
         if (connection) await connection.end();
     }
 }
-async function writeDataToFileBig(data, folderPath, db, table) {
+async function _subSavefile(data, filePath = null) {
+    try {
+        // You should pass only buffer, base64 string or hex string to this function
+        let folderPath = null;
+        if (filePath !== null) {
+            folderPath = path.resolve(filePath);
+        } else {
+            filePath = "./backupfiles/backup/database/files/";
+            folderPath = path.resolve(filePath);
+        }
+        const fileNameWithoutExt = await filefunctions.getNextFileName(folderPath);
+        const savefile = await filefunctions.saveDataToFile(data, folderPath, String(fileNameWithoutExt));
+        // { success: false, isText: true, data: data }
+        // { success: true, path: finalPath, fileName: `${fileNameWithoutExt}.${detectedExt}`, extension: detectedExt };
+        let returndata = {};
+        if (savefile === null) {
+            return null;
+        } else if (savefile.success === true) {
+            returndata = { isSaved: true, filepath: path.join(filePath, savefile.fileName), type: 'file' };
+        } else {
+            returndata = data;
+        }
+        return returndata;
+    } catch (err) {
+        console.error(cstyler.red("Error in _subSavefile:"), err.message);
+        return null;
+    }
+}
+async function writeDataToFileBig(data) {
     try {
         for (const db of Object.keys(data)) {
             for (const table of Object.keys(data[db])) {
-                for (const row of data[db][table]) {
-                    for (const col of Object.keys(row)) {
-                        // lets check if the value is buffer of 64 based string
-
+                let tableData = data[db][table];
+                data[db][table] = []; // Clear the table data to free memory as we will write row by row
+                while (tableData.length > 0) {
+                    if (tableData.length === 0) {
+                        break; // while loop runs at least once
                     }
+                    let rowData = tableData.pop(); // Get the first row and remove it from the array to free memory
+                    for (const col of Object.keys(rowData)) {
+                        let colValue = rowData[col];
+                        rowData[col] = null; // Clear original value to free memory
+                        // if no need to make it readable then we will not make all row readable it takes up a lot of memory
+                        // lets check if the value is buffer of 64 based string
+                        if (!fncs.isJsonObject(colValue) || !colValue.hasOwnProperty("type") || !colValue.hasOwnProperty("ischanged") || !colValue.hasOwnProperty("value")) {
+                            // Lets make it readable if it is not in our format
+                            colValue = toReadable(colValue);
+                        }
+                        if (colValue.hasOwnProperty("isBinaryColumn") && colValue.isBinaryColumn === true) {
+                            if (['base64', 'hex', 'buffer'].includes(colValue.type)) {
+                                const errorcount = 0;
+                                while (errorcount < 3) {
+                                    const savethefile = await _subSavefile(colValue.value);
+                                    // { isSaved: true, filepath: filepath + savefile.fileName, type: 'file' };
+                                    // data
+                                    if (savethefile === null) {
+                                        errorcount++;
+                                        continue; // Try saving the same data again
+                                    }/* else if (savethefile.hasOwnProperty("isSaved") && savethefile.isSaved === true) {
+                                        rowData[col] = savethefile; // Replace the value with file path
+                                    }*/ else {
+                                        rowData[col] = savethefile; // Replace the value with original data if saving failed but we got readable data back
+                                    }
+                                    break; // Break the loop after a successful save or a non-retryable failure
+                                }
+                                if (errorcount >= 3 && savethefile === null) {
+                                    console.error(cstyler.red("Failed to save file for column:"), col, "Database:", db, "Table:", table, "Row:", row);
+                                    if (colValue.type === 'buffer') {
+                                        rowData[col] = colValue;
+                                        rowData[col].value = bufferToHex(colValue.value);
+                                        rowData[col].type = 'hex';
+                                        rowData[row][col].from = 'buffer';
+                                    } else {
+                                        rowData[col] = colValue;
+                                    }
+                                }
+                            } else {
+                                rowData[col] = colValue; // Add the (possibly transformed) column value to the row data
+                            }
+                        } else {
+                            rowData[col] = colValue; // Add the (possibly transformed) column value to the row data
+                        }
+                    }
+                    data[db][table].push(rowData); // Add the processed row back to the data structure
                 }
             }
         }
+        return data;
     } catch (err) {
         console.error(cstyler.red("Error writing data to file:"), err.message);
         return null;
     }
 }
+async function makeDataReadable(config, data) {
+    try {
+        let savableData = {};
+        for (const db of Object.keys(data)) {
+            if (!savableData.hasOwnProperty(db)) savableData[db] = {};
+            for (const table of Object.keys(data[db])) {
+                const tableData = data[db][table];
+                data[db][table] = []; // Clear original data to free memory as we will process row by row
+                if (!savableData[db].hasOwnProperty(table)) savableData[db][table] = {};
+                // lets get the metadata of this table to check which column is binary and which column is json
+                const getmetadata = getTableSchemaLayout(config, db, table);
+                if (!fncs.isJsonObject(getmetadata)) {
+                    if (getmetadata === null) {
+                        return null;
+                    }
+                }
+                while (tableData.length > 0) { // This is an array of rows, so we iterate through each row
+                    let rowData = tableData.pop(); // Get the first row and remove it from the array to free memory
+                    for (const col of Object.keys(rowData)) {
+                        let colValue = rowData[col];
+                        // lets make data readable
+                        let isBinary = null;
+                        // Check metadata to determine if this column is binary
+                        if (fncs.isJsonObject(getmetadata) && getmetadata[col]) {
+                            const colType = getmetadata[col].type.toUpperCase();
+                            if (binaryTypes.includes(colType)) {
+                                isBinary = true;
+                            }
+                        }
+                        rowData[col] = toReadable(colValue);
+                        rowData[col].isBinaryColumn = isBinary; // Add binary type info for later processing if needed
+                    }
+                    data[db][table].push(rowData); // Add the processed row back to the data structure
+                }
+            }
+        }
+        return data;
+    } catch (err) {
+        console.error(cstyler.red("Error making data readable:"), err.message);
+        return null;
+    }
+}
+function getChunkSize(memStatus = null) {
+    if (memStatus === null) {
+        memStatus = filefunctions.getMemoryHeaps();
+    }
+    let chunkSize = 1000; // Default chunk size for high memory machines
+    if (memStatus.availableMB < 200) {
+        console.error(cstyler.red("Critical Memory Warning: Available memory RAM is below 200MB. The process may fail due to insufficient memory."));
+        return null;
+    } else if (memStatus.availableMB < 1024) {
+        chunkSize = 100; // Drastically reduce chunk size for low memory environments
+    } else if (memStatus.availableMB >= 1024 && memStatus.availableMB < 4096) {
+        chunkSize = 1000; // Moderate chunk size for mid-range machines
+    } else {
+        chunkSize = 2000; // Full chunk size for high-end machines
+    }
+    return chunkSize;
+}
 // Lets get all the rows of all tables of all databases and write to file
-async function getrows(config, jsondata) {
+async function getallrows(config, jsondata) {
     try {
         let data = {};
         let count = 0;
         let errorHappened = false;
+        // Lets get memory status before starting the process
+        const memStatus = filefunctions.getMemoryHeaps(); // if memory limit we will check the differance of memory to check the size of data stored on variable and memory we have
+        let chunkSize = getChunkSize(memStatus);
+        if (chunkSize === null) {
+            return null;
+        }
         // Lets check if backup folder exist if not
         const folderPath = path.join(__dirname, "./backupfiles/backup/database/");
         const isfolderpath = await filefunctions.isFolderPath(folderPath);
@@ -341,7 +795,7 @@ async function getrows(config, jsondata) {
                 let offset = 0;
                 let errorcount = 0;
                 while (!isfinished) {
-                    const result = await getRowsUntilMemoryLimit(config, db, table, offset, 50);
+                    const result = await getRowsUntilMemoryLimit(config, db, table, offset, 70, chunkSize);
                     if (result.isFinished === true) {
                         data[db][table].push(...result.data);
                         offset = 0; // Reset offset for next table
@@ -351,28 +805,43 @@ async function getrows(config, jsondata) {
                         data[db][table].push(...result.data);
                         result.data = []; // Clear chunk data to free memory
                         offset = result.nextOffset; // Update offset for next chunk
-                        // Lets check if we can save any file
-                        // Then check memory uses
-                        const writeResult = await filefunctions.writeJsonFile(`${folderPath}${db}_${table}_${count}.json`, data);
-                        if (writeResult) {
-                            count++;
-                            data = {};
-                            data[db] = {};
-                            data[db][table] = []; // Store only the last chunk for reference
-                            offset = result.nextOffset; // Update offset for next chunk
+                        data = makeDataReadable(config, data);
+                        /**
+                         * @(2) conditions can happen here
+                         * 1. If we have enough available memory then we will run single row operation function
+                         * 2. else we will save file and continue with next chunk
+                         */
+                        const memStatusAfter = filefunctions.getMemoryHeaps();
+                        const availableMemoryPercent = 100 * memStatusAfter.availableMB / memStatus.availableMB;
+                        if (availableMemoryPercent > 50) {
+                            // run single row operation function
+                            const singleRowResult = await getSingleRowUntilMemoryLimit(config, db, table, offset, chunkSize);
                         } else {
-                            await filefunctions.clearFolderContents(folderPath);
-                            console.error(cstyler.red("Error writing chunk to file. Clearing backup folder to prevent partial data issues."));
-                            return null;
+                            // Lets make data readable
+                            // Lets check if we can save any file
+                            // Then check memory uses
+                            const writeResult = await filefunctions.writeJsonFile(`${folderPath}${String(count)}.json`, data);
+                            if (writeResult) {
+                                count++;
+                                data = {};
+                                data[db] = {};
+                                data[db][table] = []; // Store only the last chunk for reference
+                                offset = result.nextOffset; // Update offset for next chunk
+                            } else {
+                                await filefunctions.clearFolderContents(folderPath);
+                                console.error(cstyler.red("Error writing chunk to file. Clearing backup folder to prevent partial data issues."));
+                                return null;
+                            }
+                            // if there is any error we will run getRowsUntilMemoryLimit function again with same offset until we get the data or we get 3 error then we will skip this table and continue with next table
+                            errorcount = 0; // Reset error count for next chunk
                         }
-                        errorcount = 0; // Reset error count for next chunk
                     } else if (result.status === "error") {
                         console.error(cstyler.red("Error fetching rows:"), result.message);
                         if (errorcount < 3) {
                             errorcount++;
                             continue; // Try fetching the same chunk again
                         } else {
-                            console.error(cstyler.red("Repeated errors fetching rows. Skipping to next table."));
+                            console.error(cstyler.red("Repeated errors fetching rows."));
                             errorHappened = true;
                             errorcount = 0; // Reset error count for next table
                             break; // Skip to next table
@@ -420,11 +889,13 @@ async function getrows(config, jsondata) {
 }
 
 module.exports = {
-    getrows,
+    toBuffer,
+    bufferToHex,
+    getallrows,
+    deleteRowByOffset,
     getRowsUntilMemoryLimit,
     getColumnMetadataAndSize,
+    getTableSchemaLayout,
     getSingleRowAsJson,
     toReadable,
-    toPrevious,
-    getmemorypercent
 }

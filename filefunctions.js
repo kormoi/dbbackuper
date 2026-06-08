@@ -6,10 +6,10 @@ const path = require('path');
 const fs = require('fs').promises;
 const v8 = require('v8');
 const os = require('os');
-const { pipeline } = require('stream/promises');
-const { Readable } = require('stream');
 const fsRaw = require('fs');
-
+const { Readable, Transform, pipeline } = require('stream');
+const { promisify } = require('util');
+const streamPipeline = promisify(pipeline);
 
 
 
@@ -84,7 +84,33 @@ const SIGNATURES = [
     { hex: '774F4646', ext: 'woff' },
     { hex: '774F4632', ext: 'woff2' }
 ];
+function getMemoryPercent() {
+    const stats = v8.getHeapStatistics();
+    const heapLimit = stats.heap_size_limit / 1024 / 1024; // Convert to MB
+    const usedHeap = stats.used_heap_size / 1024 / 1024;
+    return (usedHeap * 100 / heapLimit);
+}
+function getMemoryHeaps() {
+    const stats = v8.getHeapStatistics();
 
+    // 1. Calculate capacities in Megabytes (MB)
+    const heapLimitMB = stats.heap_size_limit / 1024 / 1024;
+    const usedHeapMB = stats.used_heap_size / 1024 / 1024;
+
+    // 2. Subtract used memory from the absolute limit to find available space
+    const availableHeapMB = heapLimitMB - usedHeapMB;
+
+    // 3. Compute the active usage percentage
+    const usedPercent = (usedHeapMB * 100) / heapLimitMB;
+
+    // Return the processed memory metrics object
+    return {
+        usedMB: parseFloat(usedHeapMB.toFixed(2)),          // Memory actively being consumed
+        availableMB: parseFloat(availableHeapMB.toFixed(2)),// Memory remaining before a crash
+        limitMB: parseFloat(heapLimitMB.toFixed(2)),        // Total memory allocated to Node process
+        percentage: parseFloat(usedPercent.toFixed(2))       // Usage ratio (e.g., 14.52%)
+    };
+}
 function getMemoryStats() {
     // 1. V8 Heap Stats (The Node.js Internal RAM)
     const v8Stats = v8.getHeapStatistics();
@@ -115,6 +141,33 @@ function getMemoryStats() {
             percentUsed: Number(systemPercent.toFixed(2))
         }
     };
+}
+async function getDiskMetricsInMB(pathToCheck) {
+    try {
+        // Safe path resolution for Node v20 (Defaults to execution root if empty)
+        const targetPath = path.resolve(pathToCheck || './');
+
+        // Use the native statfs method from fs/promises
+        const stats = await fs.statfs(targetPath);
+
+        // Convert the structural block configurations to bytes
+        const freeBytes = stats.bsize * stats.bavail;
+        const totalBytes = stats.bsize * stats.blocks;
+
+        // Convert bytes directly to Megabytes (MB)
+        const freeMB = freeBytes / (1024 * 1024);
+        const totalMB = totalBytes / (1024 * 1024);
+
+        return {
+            freeMB: Number(freeMB.toFixed(2)),
+            totalMB: Number(totalMB.toFixed(2)),
+            percentageAvailable: Number(((freeBytes / totalBytes) * 100).toFixed(2))
+        };
+
+    } catch (error) {
+        console.error(`❌ Failed reading storage metrics:`, error.message);
+        return null;
+    }
 }
 async function getFolderTree(dirPath) {
     const tree = {};
@@ -147,13 +200,14 @@ async function getFolderTree(dirPath) {
     } catch (err) {
         // If the path doesn't exist or is inaccessible
         console.error(`Error reading directory ${absoluteDirPath}:`, err.message);
-        return {};
+        return null;
     }
 }
 async function getNextFileName(filepath) {
     let maxCount = 0;
     let folderPath = path.join(__dirname, filepath);
     const result = await getFolderTree(folderPath);
+    if (result === null) return null;
     if (!result) return null;
     for (const file of Object.values(result)) {
         let fileName = file.name;
@@ -416,95 +470,94 @@ async function saveBufferToFile(buffer, folderPath, fileNameWithoutExt) {
         return { success: false, error: err.message };
     }
 }
+/*
 async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
     let buffer;
     let isOriginallyBuffer = Buffer.isBuffer(data);
     let isOriginallyHex = false;
     let isOriginallyPlainString = false;
 
-    // 1. Adaptive Normalization
-    if (isOriginallyBuffer) {
-        buffer = data;
-    } else if (typeof data === 'string') {
-        const isDataUrl = data.startsWith('data:');
-
-        if (isDataUrl && data.includes(';base64,')) {
-            const base64Data = data.split(';base64,')[1];
-            buffer = Buffer.from(base64Data, 'base64');
-        }
-        else if (/^[0-9A-Fa-f]+$/.test(data) && data.length % 2 === 0) {
-            buffer = Buffer.from(data, 'hex');
-            isOriginallyHex = true;
-        }
-        else if (!isDataUrl && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0 && data.length > 64) {
-            buffer = Buffer.from(data, 'base64');
-        }
-        // Intercepts normal prose text strings (e.g., "Hi how are you")
-        else {
-            buffer = Buffer.from(data, 'utf8');
-            isOriginallyPlainString = true;
-        }
-    } else {
-        throw new Error("Data must be a Buffer or a String");
-    }
-
-    // --- TEXT / PROSE STRING BYPASS LAYER ---
-    // If it was a plain text string from the start, do not save a file. Return it immediately as text data.
-    if (isOriginallyPlainString) {
-        return { success: true, isText: true, data: data };
-    }
-
-    let ext = 'bin';
-    const headerHex = buffer.toString('hex', 0, 256).toUpperCase();
-
-    // 2. Linear Signature Discovery Layer
-    for (const sig of SIGNATURES) {
-        const targetHex = sig.hex.toUpperCase();
-        const byteOffset = sig.offset || 0;
-        const hexCharOffset = byteOffset * 2;
-
-        const chunk = headerHex.substring(hexCharOffset, hexCharOffset + targetHex.length);
-
-        if (chunk === targetHex) {
-            ext = sig.ext;
-
-            if (sig.sub) {
-                const subByteOffset = sig.sub.offset || 0;
-                const subHexCharOffset = subByteOffset * 2;
-                const targetSubHex = sig.sub.hex.toUpperCase();
-
-                const subChunk = headerHex.substring(subHexCharOffset, subHexCharOffset + targetSubHex.length);
-
-                if (subChunk === targetSubHex) {
-                    break;
-                } else {
-                    break;
-                }
-            }
-            break;
-        }
-    }
-
-    // --- STRATEGIC CATCH-ALL ROUTING (For files that must be saved) ---
-    if (ext === 'bin') {
-        if (isOriginallyBuffer) {
-            ext = 'dat'; // Raw unmatched buffer saves as a functional data file
-        } else if (isOriginallyHex) {
-            ext = 'hex'; // Raw unmatched hex code string saves as a hex file
-        } else {
-            // Backup catch-all for any decoded binary content that evaluates as text characters
-            const isText = !buffer.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
-            if (isText) {
-                return { success: false, isText: true, data: buffer.toString('utf8') };
-            }
-            ext = 'dat';
-        }
-    }
-
-    const fullPath = path.join(folderPath, `${fileNameWithoutExt}.${ext}`);
-
-    // 4. Unified Safe File Stream Execution Block
     try {
+        // 1. Adaptive Normalization
+        if (isOriginallyBuffer) {
+            buffer = data;
+        } else if (typeof data === 'string') {
+            const isDataUrl = data.startsWith('data:');
+
+            if (isDataUrl && data.includes(';base64,')) {
+                const base64Data = data.split(';base64,')[1];
+                buffer = Buffer.from(base64Data, 'base64');
+            }
+            else if (/^[0-9A-Fa-f]+$/.test(data) && data.length % 2 === 0) {
+                buffer = Buffer.from(data, 'hex');
+                isOriginallyHex = true;
+            }
+            else if (!isDataUrl && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0 && data.length > 64) {
+                buffer = Buffer.from(data, 'base64');
+            }
+            // Intercepts normal prose text strings (e.g., "Hi how are you")
+            else {
+                buffer = Buffer.from(data, 'utf8');
+                isOriginallyPlainString = true;
+            }
+        } else {
+            throw new Error("Data must be a Buffer or a String");
+        }
+
+        // --- TEXT / PROSE STRING BYPASS LAYER ---
+        // If it was a plain text string from the start, do not save a file. Return it immediately as text data.
+        if (isOriginallyPlainString) {
+            return { success: false, isText: true, data: data };
+        }
+
+        let ext = 'bin';
+        const headerHex = buffer.toString('hex', 0, 256).toUpperCase();
+
+        // 2. Linear Signature Discovery Layer
+        for (const sig of SIGNATURES) {
+            const targetHex = sig.hex.toUpperCase();
+            const byteOffset = sig.offset || 0;
+            const hexCharOffset = byteOffset * 2;
+
+            const chunk = headerHex.substring(hexCharOffset, hexCharOffset + targetHex.length);
+
+            if (chunk === targetHex) {
+                ext = sig.ext;
+
+                if (sig.sub) {
+                    const subByteOffset = sig.sub.offset || 0;
+                    const subHexCharOffset = subByteOffset * 2;
+                    const targetSubHex = sig.sub.hex.toUpperCase();
+
+                    const subChunk = headerHex.substring(subHexCharOffset, subHexCharOffset + targetSubHex.length);
+
+                    if (subChunk === targetSubHex) {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+
+        // --- STRATEGIC CATCH-ALL ROUTING (For files that must be saved) ---
+        if (ext === 'bin') {
+            if (isOriginallyBuffer) {
+                ext = 'dat'; // Raw unmatched buffer saves as a functional data file
+            } else if (isOriginallyHex) {
+                ext = 'dat'; // Raw unmatched hex code string saves as a hex file
+            } else {
+                // Backup catch-all for any decoded binary content that evaluates as text characters
+                const isText = !buffer.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
+                if (isText) {
+                    return { success: false, isText: true, data: buffer.toString('utf8') };
+                }
+                ext = 'dat';
+            }
+        }
+
+        const fullPath = path.join(folderPath, `${fileNameWithoutExt}.${ext}`);
+
+        // 4. Unified Safe File Stream Execution Block
         await fs.mkdir(folderPath, { recursive: true });
 
         await pipeline(
@@ -512,10 +565,163 @@ async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
             fsRaw.createWriteStream(fullPath)
         );
 
-        return { success: true, path: fullPath, extension: ext };
+        return { success: true, path: fullPath, fileName: `${fileNameWithoutExt}.${ext}`, extension: ext };
 
     } catch (err) {
-        return { success: false, error: err.message };
+        return { success: false, error: err.message, data: data };
+    }
+}
+*/
+function createStringDecoderStream(encoding) {
+    let internalBuffer = '';
+    return new Transform({
+        transform(chunk, _, callback) {
+            let chunkStr = chunk.toString('utf8');
+            if (encoding === 'base64') {
+                internalBuffer += chunkStr;
+                const printableLength = Math.floor(internalBuffer.length / 4) * 4;
+                if (printableLength > 0) {
+                    const toProcess = internalBuffer.slice(0, printableLength);
+                    internalBuffer = internalBuffer.slice(printableLength);
+                    this.push(Buffer.from(toProcess, 'base64'));
+                }
+            } else if (encoding === 'hex') {
+                internalBuffer += chunkStr;
+                const printableLength = Math.floor(internalBuffer.length / 2) * 2;
+                if (printableLength > 0) {
+                    const toProcess = internalBuffer.slice(0, printableLength);
+                    internalBuffer = internalBuffer.slice(printableLength);
+                    this.push(Buffer.from(toProcess, 'hex'));
+                }
+            } else {
+                this.push(Buffer.from(chunkStr, 'utf8'));
+            }
+            callback();
+        },
+        flush(callback) {
+            if (internalBuffer.length > 0) {
+                this.push(Buffer.from(internalBuffer, encoding));
+            }
+            callback();
+        }
+    });
+}
+
+function createSignatureSnifferStream(SIGNATURES, onExtensionFound) {
+    let headerBuffer = Buffer.alloc(0);
+    let matched = false;
+
+    return new Transform({
+        transform(chunk, encoding, callback) {
+            if (!matched && headerBuffer.length < 64) {
+                headerBuffer = Buffer.concat([headerBuffer, chunk]);
+
+                if (headerBuffer.length >= 64 || chunk.length < 64) {
+                    let ext = 'bin';
+
+                    for (const sig of SIGNATURES) {
+                        const targetHex = sig.hex.toUpperCase();
+                        const byteOffset = sig.offset || 0;
+
+                        if (headerBuffer.length >= (byteOffset + (targetHex.length / 2))) {
+                            const chunkHex = headerBuffer.toString('hex', byteOffset, byteOffset + (targetHex.length / 2)).toUpperCase();
+
+                            if (chunkHex === targetHex) {
+                                ext = sig.ext;
+                                if (sig.sub) {
+                                    const subByteOffset = sig.sub.offset || 0;
+                                    const targetSubHex = sig.sub.hex.toUpperCase();
+                                    const subChunkHex = headerBuffer.toString('hex', subByteOffset, subByteOffset + (targetSubHex.length / 2)).toUpperCase();
+                                    if (subChunkHex === targetSubHex) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    onExtensionFound(ext, headerBuffer);
+                    matched = true;
+                }
+            }
+            this.push(chunk);
+            callback();
+        }
+    });
+}
+
+async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
+    let isOriginallyBuffer = Buffer.isBuffer(data);
+    let isOriginallyHex = false;
+    let detectedExt = 'dat';
+
+    try {
+        let sourceStream;
+        let decoderStream = null;
+
+        // 1. Process Input Types
+        if (isOriginallyBuffer) {
+            sourceStream = Readable.from(data);
+        } else if (typeof data === 'string') {
+            let cleaningData = data;
+            let targetEncoding = 'utf8';
+
+            if (cleaningData.startsWith('data:') && cleaningData.includes(';base64,')) {
+                cleaningData = cleaningData.split(';base64,')[1];
+                targetEncoding = 'base64';
+            } else if (/^[0-9A-Fa-f]+$/.test(cleaningData.slice(0, 100)) && cleaningData.length % 2 === 0) {
+                targetEncoding = 'hex';
+                isOriginallyHex = true;
+            } else if (/^[A-Za-z0-9+/]*={0,2}$/.test(cleaningData.slice(0, 100))) {
+                targetEncoding = cleaningData.length > 64 ? 'base64' : 'utf8';
+            }
+
+            // Regular string check: If it's short, standard prose text, return it immediately without saving
+            if (targetEncoding === 'utf8') {
+                return { success: false, isText: true, data: data };
+            }
+
+            sourceStream = Readable.from(cleaningData);
+            decoderStream = createStringDecoderStream(targetEncoding);
+        } else {
+            throw new Error("Data must be a Buffer or a String");
+        }
+
+        // 2. Sniffer Layer
+        const snifferStream = createSignatureSnifferStream(SIGNATURES, (ext, headerBuf) => {
+            if (ext === 'bin') {
+                // Check if the binary data consists entirely of printable text characters
+                const isText = !headerBuf.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
+
+                // FIX: If it's a binary text stream, route it explicitly to a .txt extension
+                detectedExt = isText ? 'txt' : 'dat';
+            } else {
+                detectedExt = ext;
+            }
+        });
+
+        // 3. Setup File Paths
+        await fs.mkdir(folderPath, { recursive: true });
+        let tmpPath = path.join(folderPath, `${fileNameWithoutExt}.tmp`);
+        const writeStream = fsRaw.createWriteStream(tmpPath);
+
+        // 4. Pipe everything safely
+        if (decoderStream) {
+            await streamPipeline(sourceStream, decoderStream, snifferStream, writeStream);
+        } else {
+            await streamPipeline(sourceStream, snifferStream, writeStream);
+        }
+
+        // 5. Finalize file name with the newly verified extension
+        const finalPath = path.join(folderPath, `${fileNameWithoutExt}.${detectedExt}`);
+        await fs.rename(tmpPath, finalPath);
+
+        return { success: true, path: finalPath, fileName: `${fileNameWithoutExt}.${detectedExt}`, extension: detectedExt };
+
+    } catch (err) {
+        console.error(`Error saving data to file: ${err.message}`);
+        return null;
     }
 }
 /**
@@ -558,7 +764,10 @@ async function getUniqueFilePath(folderPath, fileName, ext) {
 }
 module.exports = {
     SIGNATURES,
+    getMemoryPercent,
+    getMemoryHeaps,
     getMemoryStats,
+    getDiskMetricsInMB,
     getFolderTree,
     getNextFileName,
     readJsonFile,

@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const fs = require("fs/promises");  // Importing fs.promises for async operations
 const path = require("path");  // Importing Node's path module
 const cstyler = require("cstyler");
+const pg = require('pg');
 
 
 
@@ -57,27 +58,49 @@ function getDateTime(separator = "/") {
   };
 }
 async function detectDatabase(config) {
-    // 1. Try PostgreSQL first (Stricter handshakes)
-    if (config.connectionString?.startsWith('postgres') || config.port === 5432) {
-        try {
-            const pool = new Pool(config);
-            const client = await pool.connect();
-            client.release(); // Release back to pool
-            return { type: 'pg', connection: pool };
-        } catch (e) {
-            // If it failed but wasn't a "wrong driver" error, handle it
-        }
-    }
+  if (!config || typeof config !== 'object') return null;
 
-    // 2. Try MySQL
-    try {
-        const connection = await mysql.createPool(config);
-        // Quick probe to ensure it's actually MySQL
-        await connection.query('SELECT 1');
-        return { type: 'mysql', connection: connection };
-    } catch (e) {
-        throw new Error("Could not connect or identify database type from config.");
+  // Standardize connection configuration targets (handles raw or nested framework layouts)
+  const targetOpts = (config.connection && typeof config.connection === 'object')
+    ? config.connection
+    : config;
+
+  // --- PHASE 1: TRY POSTGRESQL ---
+  let pgClient = null;
+  try {
+    // Instantiate a quick client connection script
+    pgClient = new pg.Client(targetOpts);
+    await pgClient.connect();
+
+    // If we reach here, the PostgreSQL connection handshake succeeded!
+    return 'pg';
+  } catch (pgError) {
+    // Code 'ECONNREFUSED' means something is there but rejected us, 
+    // while protocol errors mean it's likely the entirely wrong engine type.
+    // We catch cleanly and fall through to test MySQL.
+  } finally {
+    if (pgClient) {
+      try { await pgClient.end(); } catch (e) { }
     }
+  }
+
+  // --- PHASE 2: TRY MYSQL ---
+  let mysqlConnection = null;
+  try {
+    // Open a direct standalone connection socket
+    mysqlConnection = await mysql.createConnection(targetOpts);
+    await mysqlConnection.ping(); // Explicit connection verification step
+
+    // If we reach here, the MySQL connection handshake succeeded!
+    return 'mysql';
+  } catch (mysqlError) {
+    // Both database connection paths failed
+    return null;
+  } finally {
+    if (mysqlConnection) {
+      try { await mysqlConnection.end(); } catch (e) { }
+    }
+  }
 }
 async function getMySQLVersion(config) {
   const connection = await mysql.createConnection(config);
@@ -147,6 +170,77 @@ async function isCharsetCollationValid(config, charset, collation) {
     if (connection) await connection.end();
   }
 }
+async function getDatabaseSizeInMB(config, dbName) {
+  let connection = null;
+  let poolContext = null;
+
+  try {
+    // 1. Validate configuration format
+    const isconfig = isValidDbConfig(config);
+    if (isconfig === false) {
+      console.error("❌ Invalid database configuration provided.");
+      return null;
+    }
+
+    // 2. FIXED: Added 'await' here because detectDatabase is an async function!
+    const dbType = await detectDatabase(config);
+    if (dbType === null) {
+      console.error("❌ Unable to detect database type from configuration.");
+      return null;
+    }
+
+    // 3. Extract safe driver connection attributes (Handles flat or nested config structures)
+    const connectionOpts = (config.connection && typeof config.connection === 'object')
+      ? config.connection
+      : config;
+
+    // Ensure the connection opts point to our target evaluation database space
+    const targetConnOpts = { ...connectionOpts, database: dbName };
+
+    // 4. Connect to the respective database system
+    const normalizedType = dbType.toLowerCase();
+
+    if (normalizedType === 'mysql') {
+      connection = await mysql.createConnection(targetConnOpts);
+
+      const query = `
+        SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size_mb 
+        FROM information_schema.tables 
+        WHERE table_schema = ?;
+      `;
+
+      const [rows] = await connection.execute(query, [dbName]);
+      return {size: rows[0]?.size_mb ? Number(rows[0].size_mb) : 0.00, unit: "MB", type: "mysql"};
+    }
+
+    if (normalizedType === 'postgres' || normalizedType === 'pg') {
+      // Use a standard short-lived Client or Pool instantiation for metadata parsing
+      connection = new pg.Client(targetConnOpts);
+      await connection.connect();
+
+      const query = `SELECT ROUND(pg_database_size($1) / 1024.0 / 1024.0, 2) AS size_mb;`;
+      const res = await connection.query(query, [dbName]);
+      return {size: res.rows[0]?.size_mb ? Number(res.rows[0].size_mb) : 0.00, unit: "MB", type: "pg"};
+    }
+
+    throw new Error(`Unsupported database driver type: [${dbType}]`);
+
+  } catch (err) {
+    console.error(`❌ Failed to read database metrics for ${dbName}:`, err.message);
+    return null;
+  } finally {
+    // 5. CRITICAL FIX: Always close active connection sockets to prevent leaks
+    if (connection) {
+      try {
+        if (typeof connection.end === 'function') {
+          await connection.end();
+        }
+      } catch (closeErr) {
+        // Suppress background closure bubbles
+      }
+    }
+  }
+}
 async function getMySQLEngines(config) {
   let connection;
 
@@ -173,28 +267,44 @@ async function getMySQLEngines(config) {
     if (connection) await connection.end();
   }
 }
-function isValidMySQLConfig(config) {
-  if (typeof config !== 'object' || config === null) return false;
+function isValidDbConfig(config) {
+  if (!isJsonObject(config)) return false;
 
-  const requiredKeys = ['host', 'user', 'password', 'port'];
+  const engine = (config.client || config.dialect || '').toLowerCase();
 
-  for (const key of requiredKeys) {
-    if (!(key in config)) return false;
+  // If config.connection doesn't exist, conn safely becomes the root config object
+  const conn = (config.connection && typeof config.connection === 'object')
+    ? config.connection
+    : config;
 
-    const value = config[key];
-    const type = typeof value;
+  const isMySQL = engine.includes('mysql') || engine.includes('mariadb');
+  const isPG = engine.includes('post') || engine.includes('pg');
 
-    // Allow string, number, boolean
-    if (!['string', 'number', 'boolean'].includes(type)) return false;
+  if (!isMySQL && !isPG) {
+    if (!('host' in conn)) return false;
+  }
 
-    // Extra string validation
-    if (type === 'string' && value.trim() === '') return false;
+  // 1. Core Connection Checks (Database removed from required check)
+  if (!('host' in conn) || !('password' in conn) || !('port' in conn)) return false;
+  if (!('user' in conn) && !('username' in conn)) return false;
+
+  // 2. Validate types of values present inside the connection target
+  const trackableKeys = ['host', 'user', 'username', 'password', 'port', 'database'];
+
+  for (const key of trackableKeys) {
+    if (key in conn) {
+      const value = conn[key];
+      const type = typeof value;
+
+      if (!['string', 'number', 'boolean'].includes(type)) return false;
+      if (type === 'string' && value.trim() === '') return false;
+    }
   }
 
   return true;
 }
 async function isMySQLDatabase(config) {
-  const isvalidconfig = isValidMySQLConfig(config);
+  const isvalidconfig = isValidDbConfig(config);
   if (isvalidconfig === false) {
     throw new Error("There is some information missing in config.");
   }
@@ -831,6 +941,12 @@ function hasArray(doesithave, amiin) {
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function mergeObject(obj, updates) {
+  for (let key in updates) {
+    obj[key] = updates[key];
+  }
+  return obj;
 }
 function isJsonString(jsonString) {
   try {
@@ -2188,10 +2304,11 @@ module.exports = {
   detectDatabase,
   getMySQLVersion,
   isMySQL578OrAbove,
-  isValidMySQLConfig,
+  isValidDbConfig,
   isMySQLDatabase,
   getCharsetAndCollations,
   isCharsetCollationValid,
+  getDatabaseSizeInMB,
   getMySQLEngines,
   checkDatabaseExists,
   getAllDatabaseNames,
@@ -2207,6 +2324,7 @@ module.exports = {
   stringifyAny,
   isJsonString,
   isJsonObject,
+  mergeObject,
   isJsonSame,
   JoinJsonObjects,
   getTableNames,
