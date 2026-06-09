@@ -1,6 +1,8 @@
 const fncs = require('./functions');
 const cstyler = require('cstyler');
 const mysql = require('mysql2/promise');
+const path = require("path");
+const fs = require('fs').promises;
 
 
 
@@ -33,6 +35,104 @@ async function isMySQL578OrAbove(config) {
   if (minor < 7) return false;
   // major==5, minor==7
   return patch >= 8;
+}
+async function getDiskMetricsInMB(pathToCheck) {
+    try {
+        // Safe path resolution for Node v20 (Defaults to execution root if empty)
+        const targetPath = path.resolve(pathToCheck || './');
+
+        // Use the native statfs method from fs/promises
+        const stats = await fs.statfs(targetPath);
+
+        // Convert the structural block configurations to bytes
+        const freeBytes = stats.bsize * stats.bavail;
+        const totalBytes = stats.bsize * stats.blocks;
+
+        // Convert bytes directly to Megabytes (MB)
+        const freeMB = freeBytes / (1024 * 1024);
+        const totalMB = totalBytes / (1024 * 1024);
+
+        return {
+            freeMB: Number(freeMB.toFixed(2)),
+            totalMB: Number(totalMB.toFixed(2)),
+            percentageAvailable: Number(((freeBytes / totalBytes) * 100).toFixed(2))
+        };
+
+    } catch (error) {
+        console.error(`❌ Failed reading storage metrics:`, error.message);
+        return null;
+    }
+}
+async function getDatabaseSizeInMB(config, dbName) {
+  let connection = null;
+  let poolContext = null;
+
+  try {
+    // 1. Validate configuration format
+    const isconfig = fncs.isValidDbConfig(config);
+    if (isconfig === false) {
+      console.error("❌ Invalid database configuration provided.");
+      return null;
+    }
+
+    // 2. FIXED: Added 'await' here because detectDatabase is an async function!
+    const dbType = await fncs.detectDatabase(config);
+    if (dbType === null) {
+      console.error("❌ Unable to detect database type from configuration.");
+      return null;
+    }
+
+    // 3. Extract safe driver connection attributes (Handles flat or nested config structures)
+    const connectionOpts = (config.connection && typeof config.connection === 'object')
+      ? config.connection
+      : config;
+
+    // Ensure the connection opts point to our target evaluation database space
+    const targetConnOpts = { ...connectionOpts, database: dbName };
+
+    // 4. Connect to the respective database system
+    const normalizedType = dbType.toLowerCase();
+
+    if (normalizedType === 'mysql') {
+      connection = await mysql.createConnection(targetConnOpts);
+
+      const query = `
+        SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size_mb 
+        FROM information_schema.tables 
+        WHERE table_schema = ?;
+      `;
+
+      const [rows] = await connection.execute(query, [dbName]);
+      return { size: rows[0]?.size_mb ? Number(rows[0].size_mb) : 0.00, unit: "MB", type: "mysql" };
+    }
+
+    if (normalizedType === 'postgres' || normalizedType === 'pg') {
+      // Use a standard short-lived Client or Pool instantiation for metadata parsing
+      connection = new pg.Client(targetConnOpts);
+      await connection.connect();
+
+      const query = `SELECT ROUND(pg_database_size($1) / 1024.0 / 1024.0, 2) AS size_mb;`;
+      const res = await connection.query(query, [dbName]);
+      return { size: res.rows[0]?.size_mb ? Number(res.rows[0].size_mb) : 0.00, unit: "MB", type: "pg" };
+    }
+
+    throw new Error(`Unsupported database driver type: [${dbType}]`);
+
+  } catch (err) {
+    console.error(`❌ Failed to read database metrics for ${dbName}:`, err.message);
+    return null;
+  } finally {
+    // 5. CRITICAL FIX: Always close active connection sockets to prevent leaks
+    if (connection) {
+      try {
+        if (typeof connection.end === 'function') {
+          await connection.end();
+        }
+      } catch (closeErr) {
+        // Suppress background closure bubbles
+      }
+    }
+  }
 }
 async function getCharsetAndCollations(config) {
   let conn;
@@ -305,6 +405,8 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
 module.exports = {
     getMySQLVersion,
     isMySQL578OrAbove,
+    getDatabaseSizeInMB,
+    getDiskMetricsInMB,
     getCharsetAndCollations,
     getDatabaseCharsetAndCollation,
     getmetadata,

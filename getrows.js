@@ -9,6 +9,7 @@ const path = require('path');
 const { count } = require('console');
 const filefunctions = require('./filefunctions');
 const getmtd = require("./getmetadata");
+const links = require("./links");
 
 
 
@@ -284,6 +285,23 @@ async function deleteRowByOffset(dbConfig, dbName, tableName, offset) {
     }
 }
 // Fetch rows in chunks until memory limit is approached
+function getChunkSize(memStatus = null) {
+    if (memStatus === null) {
+        memStatus = filefunctions.getMemoryHeaps();
+    }
+    let chunkSize = 1000; // Default chunk size for high memory machines
+    if (memStatus.availableMB < 200) {
+        console.error(cstyler.red("Critical Memory Warning: Available memory RAM is below 200MB. The process may fail due to insufficient memory."));
+        return null;
+    } else if (memStatus.availableMB < 1024) {
+        chunkSize = 100; // Drastically reduce chunk size for low memory environments
+    } else if (memStatus.availableMB >= 1024 && memStatus.availableMB < 4096) {
+        chunkSize = 1000; // Moderate chunk size for mid-range machines
+    } else {
+        chunkSize = 2000; // Full chunk size for high-end machines
+    }
+    return chunkSize;
+}
 async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOffset = 0, thresholdPercent = 70, chunkSize = 1000) {
     let connection;
     let allData = [];
@@ -558,11 +576,6 @@ async function writeDataToFileBig(data) {
                         let colValue = rowData[col];
                         rowData[col] = null; // Clear original value to free memory
                         // if no need to make it readable then we will not make all row readable it takes up a lot of memory
-                        // lets check if the value is buffer of 64 based string
-                        if (!fncs.isJsonObject(colValue) || !colValue.hasOwnProperty("type") || !colValue.hasOwnProperty("ischanged") || !colValue.hasOwnProperty("value")) {
-                            // Lets make it readable if it is not in our format
-                            colValue = toReadable(colValue);
-                        }
                         if (colValue.hasOwnProperty("isBinaryColumn") && colValue.isBinaryColumn === true) {
                             if (['base64', 'hex', 'buffer'].includes(colValue.type)) {
                                 const errorcount = 0;
@@ -612,11 +625,19 @@ async function makeDataReadable(config, data) {
     try {
         let savableData = {};
         for (const db of Object.keys(data)) {
+            // check available memory
+            if (!checkMemoryLimit(80, 300)) {
+                return { data: data, processed: savableData, isfinished: false };
+            }
             if (!savableData.hasOwnProperty(db)) savableData[db] = {};
             for (const table of Object.keys(data[db])) {
+                // check available memory
+                if (!checkMemoryLimit(80, 300)) {
+                    return { data: data, processed: savableData, isfinished: false };
+                }
                 const tableData = data[db][table];
                 data[db][table] = []; // Clear original data to free memory as we will process row by row
-                if (!savableData[db].hasOwnProperty(table)) savableData[db][table] = {};
+                if (!savableData[db].hasOwnProperty(table)) savableData[db][table] = [];
                 // lets get the metadata of this table to check which column is binary and which column is json
                 const getmetadata = getmtd.getTableSchemaLayout(config, db, table);
                 if (!fncs.isJsonObject(getmetadata)) {
@@ -624,7 +645,17 @@ async function makeDataReadable(config, data) {
                         return null;
                     }
                 }
+                let savableTableData = {};
+                let rowcount = 0;
                 while (tableData.length > 0) { // This is an array of rows, so we iterate through each row
+                    if (rowcount >= 100) {
+                        // check available memory
+                        if (!checkMemoryLimit(80, 300)) {
+                            data[db][table] = tableData;
+                            return { data: data, processed: savableData, isfinished: false };
+                        }
+                        rowcount = 0;
+                    }
                     let rowData = tableData.pop(); // Get the first row and remove it from the array to free memory
                     for (const col of Object.keys(rowData)) {
                         let colValue = rowData[col];
@@ -640,32 +671,16 @@ async function makeDataReadable(config, data) {
                         rowData[col] = toReadable(colValue);
                         rowData[col].isBinaryColumn = isBinary; // Add binary type info for later processing if needed
                     }
-                    data[db][table].push(rowData); // Add the processed row back to the data structure
+                    savableData[db][table].push(rowData); // Add the processed row back to the data structure
+                    rowcount++;
                 }
             }
         }
-        return data;
+        return { data: data, processed: savableData, isfinished: true };
     } catch (err) {
         console.error(cstyler.red("Error making data readable:"), err.message);
         return null;
     }
-}
-function getChunkSize(memStatus = null) {
-    if (memStatus === null) {
-        memStatus = filefunctions.getMemoryHeaps();
-    }
-    let chunkSize = 1000; // Default chunk size for high memory machines
-    if (memStatus.availableMB < 200) {
-        console.error(cstyler.red("Critical Memory Warning: Available memory RAM is below 200MB. The process may fail due to insufficient memory."));
-        return null;
-    } else if (memStatus.availableMB < 1024) {
-        chunkSize = 100; // Drastically reduce chunk size for low memory environments
-    } else if (memStatus.availableMB >= 1024 && memStatus.availableMB < 4096) {
-        chunkSize = 1000; // Moderate chunk size for mid-range machines
-    } else {
-        chunkSize = 2000; // Full chunk size for high-end machines
-    }
-    return chunkSize;
 }
 // Lets get all the rows of all tables of all databases and write to file
 async function getallrows(config, jsondata) {
@@ -680,7 +695,7 @@ async function getallrows(config, jsondata) {
             return null;
         }
         // Lets check if backup folder exist if not
-        const folderPath = path.join(__dirname, "./backupfiles/backup/database/");
+        const folderPath = path.resolve(links.database);
         const isfolderpath = await filefunctions.isFolderPath(folderPath);
         if (!isfolderpath) {
             const createfolder = await filefunctions.makeDirectory(folderPath);
@@ -726,7 +741,8 @@ async function getallrows(config, jsondata) {
                             // Lets make data readable
                             // Lets check if we can save any file
                             // Then check memory uses
-                            const writeResult = await filefunctions.writeJsonFile(`${folderPath}${String(count)}.json`, data);
+                            const fileNamePath = path.join(folderPath, `${String(count)}.json`);
+                            const writeResult = await filefunctions.writeJsonFile(fileNamePath, data);
                             if (writeResult) {
                                 count++;
                                 data = {};
@@ -795,6 +811,7 @@ async function getallrows(config, jsondata) {
 }
 
 module.exports = {
+    checkMemoryLimit,
     toBuffer,
     bufferToHex,
     getallrows,

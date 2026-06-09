@@ -142,32 +142,39 @@ function getMemoryStats() {
         }
     };
 }
-async function getDiskMetricsInMB(pathToCheck) {
-    try {
-        // Safe path resolution for Node v20 (Defaults to execution root if empty)
-        const targetPath = path.resolve(pathToCheck || './');
+async function getApplicationRoot() {
+    // 1. Fallback Option: Get the directory where the node process was initialized.
+    // In 95% of standard production environments, this will point directly to the app root.
+    let currentDir = process.cwd();
 
-        // Use the native statfs method from fs/promises
-        const stats = await fs.statfs(targetPath);
+    // 2. Traversal Loop: Walk up directories looking for the master package.json file
+    while (currentDir) {
+        try {
+            const packageJsonPath = path.join(currentDir, 'package.json');
 
-        // Convert the structural block configurations to bytes
-        const freeBytes = stats.bsize * stats.bavail;
-        const totalBytes = stats.bsize * stats.blocks;
+            // Check if package.json exists in the current directory level
+            await fs.access(packageJsonPath);
 
-        // Convert bytes directly to Megabytes (MB)
-        const freeMB = freeBytes / (1024 * 1024);
-        const totalMB = totalBytes / (1024 * 1024);
+            // Double check that we aren't stopping inside our own module's folder structure
+            if (!currentDir.includes('node_modules')) {
+                return currentDir;
+            }
+        } catch (e) {
+            // package.json wasn't found at this level, continue climbing up
+        }
 
-        return {
-            freeMB: Number(freeMB.toFixed(2)),
-            totalMB: Number(totalMB.toFixed(2)),
-            percentageAvailable: Number(((freeBytes / totalBytes) * 100).toFixed(2))
-        };
+        const parentDir = path.dirname(currentDir);
 
-    } catch (error) {
-        console.error(`❌ Failed reading storage metrics:`, error.message);
-        return null;
+        // If we hit the root filesystem anchor (e.g. "/" or "C:\"), break out of the loop
+        if (parentDir === currentDir) {
+            break;
+        }
+
+        currentDir = parentDir;
     }
+
+    // Secondary safe fallback if the traversal loop somehow runs out of steps
+    return process.cwd();
 }
 async function getFolderTree(dirPath) {
     const tree = {};
@@ -220,6 +227,32 @@ async function getNextFileName(filepath) {
         }
     }
     return maxCount + 1;
+}
+async function readFileSafely(filePath, asArray = false) {
+    try {
+        const resolvedPath = path.resolve(filePath);
+
+        // Read the file with standard UTF-8 string encoding
+        const rawContent = await fs.readFile(resolvedPath, 'utf-8');
+
+        if (!asArray) {
+            return rawContent;
+        }
+
+        // Parse ignore file lines: split, clean whitespace, remove comments
+        return rawContent
+            .split(/\r?\n/) // Split by newline (handles Windows \r\n and Unix \n)
+            .map(line => line.trim())
+            .filter(line => line !== '' && !line.startsWith('#'));
+
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            console.warn(`⚠️ File not found: ${filePath}`);
+        } else {
+            console.error(`❌ Error reading file at ${filePath}:`, error.message);
+        }
+        return null;
+    }
 }
 async function readJsonFile(filePath) {
     try {
@@ -425,7 +458,113 @@ async function deletePath(targetPath) {
         return false;
     }
 }
+async function getCustomFileSizesInMB(pathsToCalculate, excludeList = []) {
+    try {
+        if (!Array.isArray(pathsToCalculate)) {
+            throw new Error("The first parameter must be an array of paths.");
+        }
 
+        // 1. Resolve all exclusion targets to absolute paths for bulletproof matching
+        const absoluteExcludes = new Set(excludeList.map(p => path.resolve(p)));
+        const results = {};
+
+        // Helper function to recursively scan folders while respecting exclusions
+        async function scanPath(currentPath) {
+            const absoluteCurrent = path.resolve(currentPath);
+
+            // If this file/folder path is in the exclusion list, skip it entirely
+            if (absoluteExcludes.has(absoluteCurrent)) {
+                return;
+            }
+
+            try {
+                const stats = await fs.stat(absoluteCurrent);
+
+                if (stats.isFile()) {
+                    // Convert raw bytes to MB
+                    const sizeInMB = stats.size / (1024 * 1024);
+                    results[absoluteCurrent] = `${Number(sizeInMB.toFixed(2))} MB`;
+                }
+                else if (stats.isDirectory()) {
+                    const entries = await fs.readdir(absoluteCurrent);
+
+                    // Concurrently evaluate all items nested inside this directory
+                    await Promise.all(
+                        entries.map(entry => scanPath(path.join(absoluteCurrent, entry)))
+                    );
+                }
+            } catch (err) {
+                // If a specific file is missing or locked, log it quietly and continue scanning the rest
+                console.warn(`⚠️ Skipping inaccessible target: ${absoluteCurrent} (${err.message})`);
+            }
+        }
+
+        // 2. Process all entry points provided in the first array parameter
+        await Promise.all(pathsToCalculate.map(p => scanPath(p)));
+
+        return results;
+
+    } catch (error) {
+        console.error(`❌ Failed to calculate target file metrics:`, error.message);
+        return null;
+    }
+}
+async function getCustomFileSizesSumInMB(pathsToCalculate, excludeList = []) {
+    try {
+        if (!Array.isArray(pathsToCalculate)) {
+            throw new Error("The first parameter must be an array of paths.");
+        }
+
+        const absoluteExcludes = new Set(excludeList.map(p => path.resolve(p)));
+        const filesBreakdown = {};
+        let totalSizeInBytes = 0; // Tracking raw bytes for accuracy prior to division
+
+        // Recursive scanner function
+        async function scanPath(currentPath) {
+            const absoluteCurrent = path.resolve(currentPath);
+
+            // Halt if this path branch is blacklisted
+            if (absoluteExcludes.has(absoluteCurrent)) {
+                return;
+            }
+
+            try {
+                const stats = await fs.stat(absoluteCurrent);
+
+                if (stats.isFile()) {
+                    totalSizeInBytes += stats.size;
+
+                    const sizeInMB = stats.size / (1024 * 1024);
+                    filesBreakdown[absoluteCurrent] = `${Number(sizeInMB.toFixed(2))} MB`;
+                }
+                else if (stats.isDirectory()) {
+                    const entries = await fs.readdir(absoluteCurrent);
+                    await Promise.all(
+                        entries.map(entry => scanPath(path.join(absoluteCurrent, entry)))
+                    );
+                }
+            } catch (err) {
+                console.warn(`⚠️ Skipping inaccessible target: ${absoluteCurrent} (${err.message})`);
+            }
+        }
+
+        // Process all target entry arrays
+        await Promise.all(pathsToCalculate.map(p => scanPath(p)));
+
+        // Calculate the absolute total sum representation
+        const totalSumInMB = totalSizeInBytes / (1024 * 1024);
+
+        return {
+            files: filesBreakdown,
+            totalSum: Number(totalSumInMB.toFixed(2)),
+            unit: "MB"
+        };
+
+    } catch (error) {
+        console.error(`❌ Failed to calculate target file metrics:`, error.message);
+        return null;
+    }
+}
 async function saveBufferToFile(buffer, folderPath, fileNameWithoutExt) {
     if (!Buffer.isBuffer(buffer)) throw new Error("Data must be a Buffer");
 
@@ -767,9 +906,10 @@ module.exports = {
     getMemoryPercent,
     getMemoryHeaps,
     getMemoryStats,
-    getDiskMetricsInMB,
+    getApplicationRoot,
     getFolderTree,
     getNextFileName,
+    readFileSafely,
     readJsonFile,
     writeJsonFile,
     unzipFile,
@@ -781,6 +921,8 @@ module.exports = {
     clearFolderContents,
     deleteSingleFile,
     deletePath,
+    getCustomFileSizesInMB,
+    getCustomFileSizesSumInMB,
     saveBufferToFile,
     saveDataToFile,
     fileToBase64,

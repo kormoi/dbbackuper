@@ -1,6 +1,6 @@
 module.exports = {
-    backup: path.join(__dirname, "./backupfiles/backup"),
-    database: path.join(__dirname, "./backupfiles/backup/database"),
-    databasefiles: path.join(__dirname, "./backupfiles/backup/database/files"),
-    programfiles: path.join(__dirname, "./backupfiles/backup/programfiles"),
+    backup: "./backupfiles/backup",
+    database: "./backupfiles/backup/database",
+    databasefiles: "./backupfiles/backup/database/files",
+    programfiles: "./backupfiles/backup/programfiles",
 }

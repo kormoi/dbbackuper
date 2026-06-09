@@ -123,77 +123,6 @@ async function isCharsetCollationValid(config, charset, collation) {
     if (connection) await connection.end();
   }
 }
-async function getDatabaseSizeInMB(config, dbName) {
-  let connection = null;
-  let poolContext = null;
-
-  try {
-    // 1. Validate configuration format
-    const isconfig = isValidDbConfig(config);
-    if (isconfig === false) {
-      console.error("❌ Invalid database configuration provided.");
-      return null;
-    }
-
-    // 2. FIXED: Added 'await' here because detectDatabase is an async function!
-    const dbType = await detectDatabase(config);
-    if (dbType === null) {
-      console.error("❌ Unable to detect database type from configuration.");
-      return null;
-    }
-
-    // 3. Extract safe driver connection attributes (Handles flat or nested config structures)
-    const connectionOpts = (config.connection && typeof config.connection === 'object')
-      ? config.connection
-      : config;
-
-    // Ensure the connection opts point to our target evaluation database space
-    const targetConnOpts = { ...connectionOpts, database: dbName };
-
-    // 4. Connect to the respective database system
-    const normalizedType = dbType.toLowerCase();
-
-    if (normalizedType === 'mysql') {
-      connection = await mysql.createConnection(targetConnOpts);
-
-      const query = `
-        SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size_mb 
-        FROM information_schema.tables 
-        WHERE table_schema = ?;
-      `;
-
-      const [rows] = await connection.execute(query, [dbName]);
-      return {size: rows[0]?.size_mb ? Number(rows[0].size_mb) : 0.00, unit: "MB", type: "mysql"};
-    }
-
-    if (normalizedType === 'postgres' || normalizedType === 'pg') {
-      // Use a standard short-lived Client or Pool instantiation for metadata parsing
-      connection = new pg.Client(targetConnOpts);
-      await connection.connect();
-
-      const query = `SELECT ROUND(pg_database_size($1) / 1024.0 / 1024.0, 2) AS size_mb;`;
-      const res = await connection.query(query, [dbName]);
-      return {size: res.rows[0]?.size_mb ? Number(res.rows[0].size_mb) : 0.00, unit: "MB", type: "pg"};
-    }
-
-    throw new Error(`Unsupported database driver type: [${dbType}]`);
-
-  } catch (err) {
-    console.error(`❌ Failed to read database metrics for ${dbName}:`, err.message);
-    return null;
-  } finally {
-    // 5. CRITICAL FIX: Always close active connection sockets to prevent leaks
-    if (connection) {
-      try {
-        if (typeof connection.end === 'function') {
-          await connection.end();
-        }
-      } catch (closeErr) {
-        // Suppress background closure bubbles
-      }
-    }
-  }
-}
 async function getMySQLEngines(config) {
   let connection;
 
@@ -896,9 +825,34 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function mergeObject(obj, updates) {
-  for (let key in updates) {
-    obj[key] = updates[key];
+  // Safety guard rails
+  if (!obj || typeof obj !== 'object' || !updates || typeof updates !== 'object') {
+    return obj;
   }
+
+  // Helper to identify a pure plain JSON object vs null/arrays/Dates
+  const isPlainJson = (val) => val !== null && typeof val === 'object' && Object.prototype.toString.call(val) === '[object Object]';
+
+  for (let key in updates) {
+    if (updates.hasOwnProperty(key)) {
+      const targetValue = obj[key];
+      const newValue = updates[key];
+
+      // Rule 1: If BOTH values are arrays -> Concatenate them
+      if (Array.isArray(targetValue) && Array.isArray(newValue)) {
+        obj[key] = [...targetValue, ...newValue];
+      }
+      // Rule 2: If BOTH values are JSON objects -> Recursively merge or replace down the tree
+      else if (isPlainJson(targetValue) && isPlainJson(newValue)) {
+        obj[key] = mergeObject(targetValue, newValue);
+      }
+      // Rule 3: Otherwise -> Completely replace
+      else {
+        obj[key] = newValue;
+      }
+    }
+  }
+
   return obj;
 }
 function isJsonString(jsonString) {
@@ -2228,7 +2182,6 @@ module.exports = {
   isValidDbConfig,
   isMySQLDatabase,
   isCharsetCollationValid,
-  getDatabaseSizeInMB,
   getMySQLEngines,
   checkDatabaseExists,
   getAllDatabaseNames,
