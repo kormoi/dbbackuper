@@ -372,6 +372,55 @@ async function dropColumn(config, databaseName, tableName, columnName) {
     if (connection) await connection.end();
   }
 }
+async function deleteRowByOffset(dbConfig, dbName, tableName, offset) {
+  let pool = null;
+
+  try {
+    pool = mysql.createPool({
+      ...dbConfig,
+      database: dbName,
+      waitForConnections: true,
+      connectionLimit: 1
+    });
+
+    const safeTableName = tableName.replace(/`/g, '');
+
+    // CHANGE: Use pool.query() instead of pool.execute() to prevent prepared statement errors
+    const selectQuery = `SELECT * FROM \`${safeTableName}\` LIMIT 1 OFFSET ?`;
+    const [targetRows] = await pool.query(selectQuery, [Number(offset)]);
+
+    // If no row exists at that offset index, exit early gracefully
+    if (targetRows.length === 0) {
+      return false;
+    }
+
+    const targetRow = targetRows[0];
+    const columns = Object.keys(targetRow);
+
+    // Build a dynamic WHERE clause matching all column values of that specific row
+    const whereConditions = columns.map(col => `\`${col}\` <=> ?`).join(' AND ');
+    const queryValues = Object.values(targetRow);
+
+    const deleteQuery = `
+            DELETE FROM \`${safeTableName}\` 
+            WHERE ${whereConditions} 
+            LIMIT 1
+        `;
+
+    // Using pool.query() here ensures null-safe matches go through smoothly
+    const [result] = await pool.query(deleteQuery, queryValues);
+    return result.affectedRows > 0;
+
+  } catch (error) {
+    console.error(`❌ Error deleting row at offset ${offset} from [${tableName}]:`, error.message);
+    return null;
+
+  } finally {
+    if (pool) {
+      await pool.end();
+    }
+  }
+}
 
 async function getAllDatabaseNames(config) {
   let connection;
@@ -760,6 +809,10 @@ function stringifyAny(data) {
   if (typeof data === 'symbol') {
     return data.toString();
   }
+  // 💡 TOP-LEVEL CHECK: Convert raw top-level buffers directly to base64
+  if (Buffer.isBuffer(data)) {
+    return data.toString('base64');
+  }
   // For non-objects (primitives) that are not undefined, simply convert them.
   if (typeof data !== 'object' && typeof data !== 'function') {
     return String(data);
@@ -767,9 +820,14 @@ function stringifyAny(data) {
   if (typeof data === "string") {
     return data;
   }
+
   // Handle objects and functions using JSON.stringify with a custom replacer.
   const seen = new WeakSet();
   const replacer = (key, value) => {
+    // 💡 NESTED CHECK: Catch buffers embedded inside objects or arrays
+    if (Buffer.isBuffer(value)) {
+      return value.toString('base64');
+    }
     if (typeof value === 'function') {
       // Convert functions to their string representation.
       return value.toString();
@@ -786,6 +844,7 @@ function stringifyAny(data) {
     }
     return value;
   };
+
   try {
     return JSON.stringify(data, replacer, 2);
   } catch (error) {
@@ -1931,25 +1990,7 @@ async function runQuery(config, databaseName, queryText) {
 }
 
 
-async function getTableRowCount(config, databaseName, tableName) {
-  let connection;
-  try {
-    connection = await mysql.createConnection(config);
 
-    // Using COUNT(*) for 100% accuracy
-    // We wrap identifiers in backticks to prevent errors with reserved words
-    const [rows] = await connection.execute(
-      `SELECT COUNT(*) AS totalRows FROM \`${databaseName}\`.\`${tableName}\``
-    );
-
-    return rows[0].totalRows;
-  } catch (err) {
-    console.error("Error fetching row count:", err.message);
-    return null;
-  } finally {
-    if (connection) await connection.end();
-  }
-}
 async function getRequiredColumnNames(config, databaseName, tableName) {
   let connection;
   try {
@@ -2218,9 +2259,9 @@ module.exports = {
   dropDatabase,
   dropTable,
   dropColumn,
+  deleteRowByOffset, // dbConfig, dbName, tableName, offset
   writeJsFile,
   runQuery,
-  getTableRowCount,
   getRequiredColumnNames,
   getAllRowsAccurately,
   addRecord,

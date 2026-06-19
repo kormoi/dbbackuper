@@ -15,6 +15,13 @@ const streamPipeline = promisify(pipeline);
 
 
 
+/**
+ * @param {MEMORY RAM PROBLEM solved} on_checking_variable_size
+ * @param {calculating memory ram} - is using extra ram
+ * @param {differant idea} memory We will store available memory before store data in variable
+ * @param {next move} then we will check available memory after we store data
+ * @returns 
+ */
 
 const SIGNATURES = [
     // --- IMAGES & DESIGN (Strict, zero-offset signatures first) ---
@@ -142,6 +149,17 @@ function getMemoryStats() {
         }
     };
 }
+function getVariableRAMSizeInMB(variable) {
+    try {
+        // Generates a binary buffer mimicking V8's internal heap representation
+        const buffer = v8.serialize(variable);
+        return buffer.length / (1024 * 1024);
+    } catch (err) {
+        // Handles edge cases like circular references that cannot be evaluated cleanly
+        console.error("Failed to measure variable RAM footprint:", err.message);
+        return 0;
+    }
+}
 async function getApplicationRoot() {
     // 1. Fallback Option: Get the directory where the node process was initialized.
     // In 95% of standard production environments, this will point directly to the app root.
@@ -212,7 +230,7 @@ async function getFolderTree(dirPath) {
 }
 async function getNextFileName(filepath) {
     let maxCount = 0;
-    let folderPath = path.join(__dirname, filepath);
+    let folderPath = path.resolve(filepath);
     const result = await getFolderTree(folderPath);
     if (result === null) return null;
     if (!result) return null;
@@ -284,8 +302,8 @@ async function writeJsonFile(filePath, data) {
 
         // Write the JSON string to the file
         await fs.writeFile(filePath, jsonString, "utf-8");
-        const successMessage = `File written successfully to ${filePath}`;
-        console.log(successMessage);
+        // const successMessage = `File written successfully to ${filePath}`;
+        // console.log(successMessage);
         return true;
     } catch (error) {
         // Handle errors (e.g., permission issues, invalid data)
@@ -293,7 +311,6 @@ async function writeJsonFile(filePath, data) {
         return null;
     }
 }
-
 // Adm Zip
 function zipFile(sourcePath, outPath) {
     try {
@@ -458,57 +475,6 @@ async function deletePath(targetPath) {
         return false;
     }
 }
-async function getCustomFileSizesInMB(pathsToCalculate, excludeList = []) {
-    try {
-        if (!Array.isArray(pathsToCalculate)) {
-            throw new Error("The first parameter must be an array of paths.");
-        }
-
-        // 1. Resolve all exclusion targets to absolute paths for bulletproof matching
-        const absoluteExcludes = new Set(excludeList.map(p => path.resolve(p)));
-        const results = {};
-
-        // Helper function to recursively scan folders while respecting exclusions
-        async function scanPath(currentPath) {
-            const absoluteCurrent = path.resolve(currentPath);
-
-            // If this file/folder path is in the exclusion list, skip it entirely
-            if (absoluteExcludes.has(absoluteCurrent)) {
-                return;
-            }
-
-            try {
-                const stats = await fs.stat(absoluteCurrent);
-
-                if (stats.isFile()) {
-                    // Convert raw bytes to MB
-                    const sizeInMB = stats.size / (1024 * 1024);
-                    results[absoluteCurrent] = `${Number(sizeInMB.toFixed(2))} MB`;
-                }
-                else if (stats.isDirectory()) {
-                    const entries = await fs.readdir(absoluteCurrent);
-
-                    // Concurrently evaluate all items nested inside this directory
-                    await Promise.all(
-                        entries.map(entry => scanPath(path.join(absoluteCurrent, entry)))
-                    );
-                }
-            } catch (err) {
-                // If a specific file is missing or locked, log it quietly and continue scanning the rest
-                console.warn(`⚠️ Skipping inaccessible target: ${absoluteCurrent} (${err.message})`);
-            }
-        }
-
-        // 2. Process all entry points provided in the first array parameter
-        await Promise.all(pathsToCalculate.map(p => scanPath(p)));
-
-        return results;
-
-    } catch (error) {
-        console.error(`❌ Failed to calculate target file metrics:`, error.message);
-        return null;
-    }
-}
 async function getCustomFileSizesSumInMB(pathsToCalculate, excludeList = []) {
     try {
         if (!Array.isArray(pathsToCalculate)) {
@@ -609,108 +575,6 @@ async function saveBufferToFile(buffer, folderPath, fileNameWithoutExt) {
         return { success: false, error: err.message };
     }
 }
-/*
-async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
-    let buffer;
-    let isOriginallyBuffer = Buffer.isBuffer(data);
-    let isOriginallyHex = false;
-    let isOriginallyPlainString = false;
-
-    try {
-        // 1. Adaptive Normalization
-        if (isOriginallyBuffer) {
-            buffer = data;
-        } else if (typeof data === 'string') {
-            const isDataUrl = data.startsWith('data:');
-
-            if (isDataUrl && data.includes(';base64,')) {
-                const base64Data = data.split(';base64,')[1];
-                buffer = Buffer.from(base64Data, 'base64');
-            }
-            else if (/^[0-9A-Fa-f]+$/.test(data) && data.length % 2 === 0) {
-                buffer = Buffer.from(data, 'hex');
-                isOriginallyHex = true;
-            }
-            else if (!isDataUrl && /^[A-Za-z0-9+/]*={0,2}$/.test(data) && data.length % 4 === 0 && data.length > 64) {
-                buffer = Buffer.from(data, 'base64');
-            }
-            // Intercepts normal prose text strings (e.g., "Hi how are you")
-            else {
-                buffer = Buffer.from(data, 'utf8');
-                isOriginallyPlainString = true;
-            }
-        } else {
-            throw new Error("Data must be a Buffer or a String");
-        }
-
-        // --- TEXT / PROSE STRING BYPASS LAYER ---
-        // If it was a plain text string from the start, do not save a file. Return it immediately as text data.
-        if (isOriginallyPlainString) {
-            return { success: false, isText: true, data: data };
-        }
-
-        let ext = 'bin';
-        const headerHex = buffer.toString('hex', 0, 256).toUpperCase();
-
-        // 2. Linear Signature Discovery Layer
-        for (const sig of SIGNATURES) {
-            const targetHex = sig.hex.toUpperCase();
-            const byteOffset = sig.offset || 0;
-            const hexCharOffset = byteOffset * 2;
-
-            const chunk = headerHex.substring(hexCharOffset, hexCharOffset + targetHex.length);
-
-            if (chunk === targetHex) {
-                ext = sig.ext;
-
-                if (sig.sub) {
-                    const subByteOffset = sig.sub.offset || 0;
-                    const subHexCharOffset = subByteOffset * 2;
-                    const targetSubHex = sig.sub.hex.toUpperCase();
-
-                    const subChunk = headerHex.substring(subHexCharOffset, subHexCharOffset + targetSubHex.length);
-
-                    if (subChunk === targetSubHex) {
-                        break;
-                    }
-                }
-                break;
-            }
-        }
-
-        // --- STRATEGIC CATCH-ALL ROUTING (For files that must be saved) ---
-        if (ext === 'bin') {
-            if (isOriginallyBuffer) {
-                ext = 'dat'; // Raw unmatched buffer saves as a functional data file
-            } else if (isOriginallyHex) {
-                ext = 'dat'; // Raw unmatched hex code string saves as a hex file
-            } else {
-                // Backup catch-all for any decoded binary content that evaluates as text characters
-                const isText = !buffer.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
-                if (isText) {
-                    return { success: false, isText: true, data: buffer.toString('utf8') };
-                }
-                ext = 'dat';
-            }
-        }
-
-        const fullPath = path.join(folderPath, `${fileNameWithoutExt}.${ext}`);
-
-        // 4. Unified Safe File Stream Execution Block
-        await fs.mkdir(folderPath, { recursive: true });
-
-        await pipeline(
-            Readable.from(buffer),
-            fsRaw.createWriteStream(fullPath)
-        );
-
-        return { success: true, path: fullPath, fileName: `${fileNameWithoutExt}.${ext}`, extension: ext };
-
-    } catch (err) {
-        return { success: false, error: err.message, data: data };
-    }
-}
-*/
 function createStringDecoderStream(encoding) {
     let internalBuffer = '';
     return new Transform({
@@ -789,78 +653,95 @@ function createSignatureSnifferStream(SIGNATURES, onExtensionFound) {
         }
     });
 }
-
 async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
-    let isOriginallyBuffer = Buffer.isBuffer(data);
-    let isOriginallyHex = false;
-    let detectedExt = 'dat';
+    const maxRetries = 3;
 
-    try {
-        let sourceStream;
-        let decoderStream = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let isOriginallyBuffer = Buffer.isBuffer(data);
+        let isOriginallyHex = false;
+        let detectedExt = 'dat';
+        let tmpPath = '';
 
-        // 1. Process Input Types
-        if (isOriginallyBuffer) {
-            sourceStream = Readable.from(data);
-        } else if (typeof data === 'string') {
-            let cleaningData = data;
-            let targetEncoding = 'utf8';
+        try {
+            let sourceStream;
+            let decoderStream = null;
 
-            if (cleaningData.startsWith('data:') && cleaningData.includes(';base64,')) {
-                cleaningData = cleaningData.split(';base64,')[1];
-                targetEncoding = 'base64';
-            } else if (/^[0-9A-Fa-f]+$/.test(cleaningData.slice(0, 100)) && cleaningData.length % 2 === 0) {
-                targetEncoding = 'hex';
-                isOriginallyHex = true;
-            } else if (/^[A-Za-z0-9+/]*={0,2}$/.test(cleaningData.slice(0, 100))) {
-                targetEncoding = cleaningData.length > 64 ? 'base64' : 'utf8';
-            }
+            // 1. Process Input Types
+            if (isOriginallyBuffer) {
+                sourceStream = Readable.from(data);
+            } else if (typeof data === 'string') {
+                let cleaningData = data;
+                let targetEncoding = 'utf8';
 
-            // Regular string check: If it's short, standard prose text, return it immediately without saving
-            if (targetEncoding === 'utf8') {
-                return { success: false, isText: true, data: data };
-            }
+                if (cleaningData.startsWith('data:') && cleaningData.includes(';base64,')) {
+                    cleaningData = cleaningData.split(';base64,')[1];
+                    targetEncoding = 'base64';
+                } else if (/^[0-9A-Fa-f]+$/.test(cleaningData.slice(0, 100)) && cleaningData.length % 2 === 0) {
+                    targetEncoding = 'hex';
+                    isOriginallyHex = true;
+                } else if (/^[A-Za-z0-9+/]*={0,2}$/.test(cleaningData.slice(0, 100))) {
+                    targetEncoding = cleaningData.length > 64 ? 'base64' : 'utf8';
+                }
 
-            sourceStream = Readable.from(cleaningData);
-            decoderStream = createStringDecoderStream(targetEncoding);
-        } else {
-            throw new Error("Data must be a Buffer or a String");
-        }
+                // If it's regular prose text, set default extension to 'txt'
+                if (targetEncoding === 'utf8') {
+                    detectedExt = 'txt';
+                }
 
-        // 2. Sniffer Layer
-        const snifferStream = createSignatureSnifferStream(SIGNATURES, (ext, headerBuf) => {
-            if (ext === 'bin') {
-                // Check if the binary data consists entirely of printable text characters
-                const isText = !headerBuf.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
+                sourceStream = Readable.from(cleaningData);
 
-                // FIX: If it's a binary text stream, route it explicitly to a .txt extension
-                detectedExt = isText ? 'txt' : 'dat';
+                if (targetEncoding !== 'utf8') {
+                    decoderStream = createStringDecoderStream(targetEncoding);
+                }
             } else {
-                detectedExt = ext;
+                throw new Error("Data must be a Buffer or a String");
             }
-        });
 
-        // 3. Setup File Paths
-        await fs.mkdir(folderPath, { recursive: true });
-        let tmpPath = path.join(folderPath, `${fileNameWithoutExt}.tmp`);
-        const writeStream = fsRaw.createWriteStream(tmpPath);
+            // 2. Sniffer Layer
+            const snifferStream = createSignatureSnifferStream(SIGNATURES, (ext, headerBuf) => {
+                if (ext === 'bin') {
+                    const isText = !headerBuf.slice(0, 100).some(b => b < 9 || (b > 13 && b < 32));
+                    detectedExt = isText ? 'txt' : 'dat';
+                } else {
+                    detectedExt = ext;
+                }
+            });
 
-        // 4. Pipe everything safely
-        if (decoderStream) {
-            await streamPipeline(sourceStream, decoderStream, snifferStream, writeStream);
-        } else {
-            await streamPipeline(sourceStream, snifferStream, writeStream);
+            // 3. Setup File Paths
+            await fs.mkdir(folderPath, { recursive: true });
+            tmpPath = path.join(folderPath, `${fileNameWithoutExt}.tmp`);
+            const writeStream = fsRaw.createWriteStream(tmpPath);
+
+            // 4. Pipe everything safely
+            if (decoderStream) {
+                await streamPipeline(sourceStream, decoderStream, snifferStream, writeStream);
+            } else {
+                await streamPipeline(sourceStream, snifferStream, writeStream);
+            }
+
+            // 5. Finalize file name with the newly verified extension
+            const finalPath = path.join(folderPath, `${fileNameWithoutExt}.${detectedExt}`);
+            await fs.rename(tmpPath, finalPath);
+
+            // 🏁 Success! Return file information and leave retry loop
+            return { success: true, path: finalPath, fileName: `${fileNameWithoutExt}.${detectedExt}`, extension: detectedExt };
+
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed saving data to file: ${err.message}`);
+
+            // Clean up left behind temporary files on failure so it doesn't leave clutter
+            if (tmpPath) {
+                try { await fs.unlink(tmpPath); } catch (_) { }
+            }
+
+            if (attempt < maxRetries) {
+                // Cool down 1 second before opening clean new streams
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed saving data to file:`, err.message);
+                return null;
+            }
         }
-
-        // 5. Finalize file name with the newly verified extension
-        const finalPath = path.join(folderPath, `${fileNameWithoutExt}.${detectedExt}`);
-        await fs.rename(tmpPath, finalPath);
-
-        return { success: true, path: finalPath, fileName: `${fileNameWithoutExt}.${detectedExt}`, extension: detectedExt };
-
-    } catch (err) {
-        console.error(`Error saving data to file: ${err.message}`);
-        return null;
     }
 }
 /**
@@ -906,6 +787,7 @@ module.exports = {
     getMemoryPercent,
     getMemoryHeaps,
     getMemoryStats,
+    getVariableRAMSizeInMB,
     getApplicationRoot,
     getFolderTree,
     getNextFileName,
@@ -921,7 +803,6 @@ module.exports = {
     clearFolderContents,
     deleteSingleFile,
     deletePath,
-    getCustomFileSizesInMB,
     getCustomFileSizesSumInMB,
     saveBufferToFile,
     saveDataToFile,
