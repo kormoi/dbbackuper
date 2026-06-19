@@ -11,7 +11,7 @@ const defaultdb = ['information_schema', 'mysql', 'performance_schema', 'sys', '
 async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
     try {
         // Lets check database names first
-        const alldbnames = fncs.getAllDatabaseNames(config);
+        const alldbnames = await fncs.getAllDatabaseNames(config);
         if (alldbnames === null) {
             throw new Error("Having problem getting DATABASE names");
         }
@@ -67,7 +67,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
             throw new Error("We are having problem getting available diskspace");
         }
         // Lets check if fullbackup is required or not
-        if (fullBackup === true) {
+        if (fullbackup === true) {
             // lets check uploaded files and folders
             let excludeFiles = ['./node_modules', './.gitignore', '.git']; // default file and folder names
             const approot = await filefunction.getApplicationRoot();
@@ -81,7 +81,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
                     }
                 }
             }
-            const allfilesizes = await filfunctions.getCustomFileSizesSumInMB([approot], excludeFiles);
+            const allfilesizes = await filefunction.getCustomFileSizesSumInMB([approot], excludeFiles);
             if (diskspace.freeMB > ((databaseSize * 1.5) + (allfilesizes.totalSum * 2))) {
                 console.log(cstyler.bold.underline.green("We have enough space to run backup system. We are good to go."));
                 return { success: true, message: "We have enough space to run backup system. We are good to go." };
