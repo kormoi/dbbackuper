@@ -880,8 +880,70 @@ function hasArray(doesithave, amiin) {
   }
   return true;
 }
+function getRandomItem(array) {
+    // Return undefined or handle empty arrays gracefully
+    if (!Array.isArray(array) || array.length === 0) {
+        return undefined; 
+    }
+    
+    // Calculate a random valid index
+    const randomIndex = Math.floor(Math.random() * array.length);
+    
+    // Return the item at that index
+    return array[randomIndex];
+}
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isJsonEqual(value1, value2) {
+  // 1. Check for strict equality or shared reference (handles primitives, strings, numbers, etc.)
+  if (value1 === value2) {
+    return true;
+  }
+
+  // 2. Handle null values explicitly (typeof null is 'object', so we must catch this early)
+  if (value1 === null || value2 === null) {
+    return value1 === value2;
+  }
+
+  // 3. Ensure both values share the exact same type representation
+  if (typeof value1 !== typeof value2) {
+    return false;
+  }
+
+  // 4. Handle Objects & Arrays
+  if (typeof value1 === 'object') {
+    // Ensure both are arrays OR both are plain objects (an array is not deeply equal to an object)
+    if (Array.isArray(value1) !== Array.isArray(value2)) {
+      return false;
+    }
+
+    const keys1 = Object.keys(value1);
+    const keys2 = Object.keys(value2);
+
+    // Optimization: If they don't have the same number of elements/keys, they are not equal
+    if (keys1.length !== keys2.length) {
+      return false;
+    }
+
+    // Recursively check every key and value pair
+    for (const key of keys1) {
+      // Check if the key exists in both targets
+      if (!Object.prototype.hasOwnProperty.call(value2, key)) {
+        return false;
+      }
+
+      // Recurse down into the nested child structure
+      if (!isDeepEqual(value1[key], value2[key])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // 5. Fallback for mismatched primitives
+  return false;
 }
 function mergeObject(obj, updates) {
   // Safety guard rails
@@ -2219,6 +2281,7 @@ module.exports = {
   removefromarray,
   isSameArray,
   hasArray,
+  getRandomItem,
   detectDatabase,
   isValidDbConfig,
   isMySQLDatabase,
@@ -2238,6 +2301,7 @@ module.exports = {
   stringifyAny,
   isJsonString,
   isJsonObject,
+  isJsonEqual,
   mergeObject,
   isJsonSame,
   JoinJsonObjects,

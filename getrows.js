@@ -109,6 +109,10 @@ async function totalRowCount(config, database, table) {
     }
 }
 function toReadable(value) {
+    // Lets check if previously processed or not
+    if (fncs.isJsonObject(value) && value.hasOwnProperty("type") && value.hasOwnProperty("ischanged") && value.hasOwnProperty("value")) {
+        return value;
+    }
     // 1. ADVANCED SPATIAL & GEOMETRY LAYER (MySQL / PG Support)
     if (value !== null && typeof value === 'object') {
 
@@ -374,7 +378,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
     try {
         // This function gets rows of a one table only
         let data = [];
-        let isfinished = true;
+        let isfinished = false;
         let status = "completed";
         let errorLevel = 0;
         let rowSizeMB = 0;
@@ -466,7 +470,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                             // sometimes toReadable returns plain data like string, number
                             if (fncs.isJsonObject(readableData)) {
                                 if (['hex', 'buffer', 'base64'].includes(readableData.type)) {
-                                    const savefile = await _subSavefile(readableData.value);
+                                    const savefile = await subSaveFile(readableData.value);
                                     if (savefile === null) {
                                         // do nothing keep the file on readable data
                                         // Because if it is bigger than 1 MB then
@@ -487,7 +491,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                                 } else {
                                     saveDataSingle = fncs.stringifyAny(readableData);
                                 }
-                                const saveFile = await _subSavefile(saveDataSingle);
+                                const saveFile = await subSaveFile(saveDataSingle);
                                 if (saveFile === null) {
                                     status = "error";
                                     isfinished = false;
@@ -525,7 +529,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                             const readable = toReadable(row[item]);
                             if (fncs.isJsonObject(readable)) {
                                 if (['hex', 'buffer', 'base64'].includes(readable.type)) {
-                                    const letSave = await _subSavefile(readable.value);
+                                    const letSave = await subSaveFile(readable.value);
                                     if (letSave === null) {
                                         status = "error";
                                         isfinished = false;
@@ -565,9 +569,9 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
     } catch (err) {
         console.error("Error fetching single row:", err.message);
         if (data.length > 0) {
-            return { isfinished: isfinished, status: status, offset: offset, data: data, count: rowCount, message: err.message };
+            return { isfinished: isfinished, status: status, offset: offset, data: data, count: rowCount, message: err.message, servererror: servererror };
         }
-        return null;
+        return { isfinished: null, status: null, message: err.message, servererror: servererror };
     }
 }
 async function getSingleRowAsJson(config, databaseName, tableName, offset) {
@@ -758,7 +762,7 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
         if (connection) await connection.end();
     }
 }
-async function _subSavefile(data, filePath = null) {
+async function subSaveFile(data, filePath = null) {
     try {
         // You should pass only buffer, base64 string or hex string to this function
         let folderPath = null;
@@ -776,13 +780,13 @@ async function _subSavefile(data, filePath = null) {
         if (savefile === null) {
             return null;
         } else if (savefile.success === true) {
-            returndata = { isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file' };
+            returndata = { isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file', fullpath: savefile.path };
         } else {
             returndata = data;
         }
         return returndata;
     } catch (err) {
-        console.error(cstyler.red("Error in _subSavefile:"), err.message);
+        console.error(cstyler.red("Error in subSaveFile:"), err.message);
         return null;
     }
 }
@@ -803,7 +807,7 @@ async function writeDataToFileBig(data) {
                         // if no need to make it readable then we will not make all row readable it takes up a lot of memory
                         if (colValue.hasOwnProperty("isBinaryColumn") && colValue.isBinaryColumn === true) {
                             if (['base64', 'hex', 'buffer'].includes(colValue.type)) {
-                                const savethefile = await _subSavefile(colValue.value);
+                                const savethefile = await subSaveFile(colValue.value);
                                 // if saved returns { isSaved: true, filepath: filepath + savefile.fileName, type: 'file' };
                                 // if not saved returns data
                                 if (savethefile === null) {
@@ -839,77 +843,110 @@ async function writeDataToFileBig(data) {
     }
 }
 async function makeDataReadable(config, data) {
+    // 💡 FIX 1: Declared outside try so the catch block can see it safely
+    let savableData = {};
+
     try {
-        let savableData = {};
         for (const db of Object.keys(data)) {
-            // check available memory
+            // Check available memory
             if (!checkMemoryLimit(90, 200)) {
-                const writeFile = await writeDataToFileBig(savableData);
-                savableData = writeFile.data;
+                return { success: false, data: data, processed: savableData, isfinished: false };
+            }
+
+            // 💡 FIX 3: Safe Object.hasOwn checks
+            if (!Object.hasOwn(savableData, db)) savableData[db] = {};
+
+            for (const table of Object.keys(data[db])) {
+                if (!Object.hasOwn(savableData[db], table)) savableData[db][table] = [];
+
+                // Fetch table metadata layout layout
+                const getmetadata = await getmtd.getTableSchemaLayout(config, db, table);
+                if (getmetadata === null) {
+                    throw new Error("Having problem getting TABLE schema layout.");
+                } else if (getmetadata === false) {
+                    if (data[db][table].length > 0) {
+                        throw new Error("There must be some issue on the server. Please run the system again.");
+                    } else {
+                        continue;
+                    }
+                }
+
+                // Check available memory
                 if (!checkMemoryLimit(90, 200)) {
                     return { success: false, data: data, processed: savableData, isfinished: false };
                 }
-            }
-            if (!savableData.hasOwnProperty(db)) savableData[db] = {};
-            for (const table of Object.keys(data[db])) {
-                if (!savableData[db].hasOwnProperty(table)) savableData[db][table] = [];
-                // check available memory
-                if (!checkMemoryLimit(90, 200)) {
-                    const writeFile = await writeDataToFileBig(savableData);
-                    savableData = writeFile.data;
-                    if (!checkMemoryLimit(90, 200)) {
-                        return { success: false, data: data, processed: savableData, isfinished: false };
-                    }
-                }
-                // lets get the metadata of this table to check which column is binary and which column is json
-                const getmetadata = await getmtd.getTableSchemaLayout(config, db, table);
-                if (getmetadata === null) {
-                    throw new Error("Having problem getting TABLE schema layout.")
-                }
+
                 let tableData = data[db][table];
-                data[db][table] = []; // Clear original data to free memory as we will process row by row
+                data[db][table] = []; // Clear original data array reference to release heap space
                 let rowcount = 0;
-                while (tableData.length > 0) { // This is an array of rows, so we iterate through each row
+
+                while (tableData.length > 0) {
                     if (rowcount >= 100) {
-                        // check available memory
                         if (!checkMemoryLimit(90, 200)) {
-                            const writeFile = await writeDataToFileBig(savableData);
-                            savableData = writeFile.data;
-                            if (!checkMemoryLimit(90, 200)) {
-                                data[db][table] = tableData;
-                                const writefile = await writeDataToFileBig(savableData);
-                                savableData = writefile.data;
-                                return { success: false, data: data, processed: savableData, isfinished: false };
-                            }
+                            data[db][table] = tableData;
+                            return { success: false, data: data, processed: savableData, isfinished: false };
                         }
                         rowcount = 0;
                     }
-                    let rowData = tableData.pop(); // Get the first row and remove it from the array to free memory
+
+                    // Extract last row element
+                    let rowData = tableData.pop();
+
+                    // 💡 FIX 2: Create a true, separate deep copy of the original state for safe rollbacks
+                    const backuprowdata = structuredClone(rowData);
+
                     for (const col of Object.keys(rowData)) {
-                        let colValue = rowData[col];
-                        // lets make data readable
-                        let isBinary = false;
-                        // Check metadata to determine if this column is binary
-                        if (fncs.isJsonObject(getmetadata) && getmetadata[col]) {
-                            const colType = getmetadata[col].type.toUpperCase();
-                            if (binaryTypes.includes(colType)) {
-                                isBinary = true;
+                        // 💡 FIX 3: Safe deep property lookups via Object.hasOwn
+                        if (fncs.isJsonObject(rowData[col]) &&
+                            ((Object.hasOwn(rowData[col], "type") && Object.hasOwn(rowData[col], "ischanged") && Object.hasOwn(rowData[col], "value")) ||
+                                (Object.hasOwn(rowData[col], "isSaved") && Object.hasOwn(rowData[col], "extention") && Object.hasOwn(rowData[col], "fileName") && Object.hasOwn(rowData[col], "filepath")))) {
+                            continue;
+                        }
+
+                        let colValue = toReadable(rowData[col]);
+                        rowData[col] = null; // Clean out reference early
+
+                        let savablevalue = null;
+                        if (fncs.isJsonObject(colValue)) {
+                            if (['base64', 'hex', 'buffer'].includes(colValue.type)) {
+                                savablevalue = colValue.value;
+                            }
+                        } else if (binaryTypes.includes(getmetadata[col].type.toUpperCase())) {
+                            savablevalue = colValue;
+                        }
+
+                        if (savablevalue !== null) {
+                            const savetofile = await subSaveFile(savablevalue);
+
+                            if (savetofile === null) {
+                                // 💡 FIX 5: Put the pristine deep-cloned backup back to the array
+                                tableData.push(backuprowdata);
+                                data[db][table] = tableData;
+
+                                // 💡 FIX 4: Scan the partially mutated row data safely for active file descriptors
+                                for (const item of Object.keys(rowData)) {
+                                    if (rowData[item] && typeof rowData[item] === 'object' && Object.hasOwn(rowData[item], "isSaved") && rowData[item].isSaved === true) {
+                                        await filefunctions.deletePath(path.resolve(rowData[item].fullpath));
+                                    }
+                                }
+
+                                throw new Error(`Unable to save data to file. Database: ${db} Table: ${table}`);
+                            } else {
+                                colValue = savetofile;
                             }
                         }
-                        rowData[col] = toReadable(colValue);
-                        rowData[col].isBinaryColumn = isBinary; // Add binary type info for later processing if needed
+                        rowData[col] = colValue;
                     }
-                    savableData[db][table].push(rowData); // Add the processed row back to the data structure
+                    savableData[db][table].push(rowData);
                     rowcount++;
                 }
             }
         }
-        const finalwriteFile = await writeDataToFileBig(savableData);
-        savableData = finalwriteFile.data;
         return { success: true, data: data, processed: savableData, isfinished: true };
     } catch (err) {
         console.error(cstyler.red("Error making data readable:"), err.message);
-        return { success: null, message: err.message }
+        // 🟢 Success: savableData is accessible here now!
+        return { success: null, data: data, processed: savableData, message: err.message, haveVal: haveRowData(savableData) };
     }
 }
 function memDifPercent(memory) {
@@ -950,12 +987,21 @@ function cleanVariable(data) {
     }
     return data;
 }
+function haveRowData(data) {
+    for (const db of Object.keys(data)) {
+        for (const table of Object.keys(data[db])) {
+            if (data[db][table].length > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 // Lets get all the rows of all tables of all databases and write to file
 async function getallrows(config, jsondata, forceDownload = false) {
     try {
         let data = {};
         let count = 0;
-        let errorHappened = false;
         let isfinished = false;
         let offset = 0;
         let errorcount = 0;
@@ -981,72 +1027,208 @@ async function getallrows(config, jsondata, forceDownload = false) {
                 if (!fncs.isJsonObject(jsondata[db][table])) {
                     continue;
                 }
+                console.log('Working on table: ', table);
                 if (!data[db].hasOwnProperty(table)) data[db][table] = []; // Initialize as empty array to store rows
                 // Lets check if table have any row or not
-                const rowCount = await rowCount(config, db, table);
+                const rowCount = await totalRowCount(config, db, table);
                 if (rowCount === null) {
                     throw new Error("Having problem featching row count.");
                 } else if (rowCount === 0) {
                     continue;
                 }
+                console.log('Total row count ', rowCount)
                 // lets get all the rows of this table
-                while (!isfinished) {
+                while (true) {
                     const result = await getRowsUntilMemoryLimit(config, db, table, offset, 70, chunkSize);
                     if (result.isFinished === true) {
+                        offset = 0;
                         data[db][table].push(...result.data);
                         offset = 0; // Reset offset for next table
                         isfinished = true;
                         errorcount = 0; // Reset error count for next table
                         break;
                     } else if (result.status === "memory_limit") {
+                        errorcount = 0;
+                        offset = result.nextOffset;
                         const getmemheap = filefunctions.getMemoryHeaps();
                         const isNearlySame = isNearlySame(memStatus.availableMB, getmemheap.availableMB, 35);
                         data[db][table].push(...result.data);
                         result.data = null; // Clear chunk data to free memory
                         offset = result.nextOffset; // Update offset for next chunk
                         data = await makeDataReadable(config, data);
+                        let processedData = {};
                         if (data.success === null) {
-                            throw new Error(data.message);
+                            if (data.haveVal === true) {
+                                // Lets store data on variable
+                                processedData = data.processed;
+                                data = data.data;
+                                processedData = cleanVariable(data);
+                                // cleaning after declaration to keep memory safe
+                                processedData = cleanVariable(processedData);
+                                // lets data save to file
+                                const nextFile = await filefunctions.getNextFileName(links.database);
+                                if (nextFile === null) {
+                                    throw new Error("Having problem processing next file name for internal file functions.");
+                                }
+                                const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
+                                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
+                                if (writeFile === null) {
+                                    throw new Error("Having problem writing database files to directory");
+                                }
+                                processedData = {}; // Lets clear the memory
+                            } else {
+                                throw new Error(data.message);
+                            }
                         } else {
-                            const savableData = data.processed;
-                            // Lets clear out the variable
-                            data = cleanVariable(data.data);
-                            if (!data.hasOwnProperty(db)) data[db] = {};
-                            if (!data[db].hasOwnProperty(table)) data[db][table] = [];
+                            if (data.success === true) {
+                                processedData = data.processed;
+                                data = {};
+                                data[db] = {};
+                                data[db][table] = [];
+                                // cleaning after declaration to keep memory safe
+                                processedData = cleanVariable(processedData);
+                            } else {
+                                processedData = data.processed;
+                                data = data.data;
+                                processedData = cleanVariable(data);
+                                // cleaning after declaration to keep memory safe
+                                processedData = cleanVariable(processedData);
+                            }
                             // Variable cleening done
                             // lets data save to file
-                            const writeFile = await filefunctions.writeJsonFile(links.databasefiles, savableData);
+                            const nextFile = await filefunctions.getNextFileName(links.database);
+                            if (nextFile === null) {
+                                throw new Error("Having problem processing next file name for internal file functions.");
+                            }
+                            const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
+                            const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
                             if (writeFile === null) {
                                 throw new Error("Having problem writing database files to directory");
                             }
+                            processedData = {}; // Lets clear the memory
                         }
                         // If there is enough memory but still there is a problem
                         if (isNearlySame) {
                             // Lets run single row operation
                             // now we have enough memory to run next row process
                             const getmemheap = filefunctions.getMemoryHeaps();
-                            const getsingle = await getSingleRowUntilMemoryLimit(config, db, table, offset, 200, forceDownload);
-
+                            let singleChunk = 0;
+                            if (chunkSize > 200) {
+                                singleChunk = 200;
+                            } else if (chunkSize > 1) {
+                                singleChunk = chunkSize / 2;
+                            } else {
+                                singleChunk = 10;
+                            }
+                            const getsingle = await getSingleRowUntilMemoryLimit(config, db, table, offset, singleChunk, forceDownload);
+                            /**
+                             * return { isfinished: isfinished, status: status, offset: offset, data: data, count: rowCount };
+                             * return { isfinished: isfinished, status: status, offset: offset, data: data, count: rowCount, message: err.message };
+                             * return { isfinished: null, status: null, message: err.message };
+                             */
+                            if (getsingle.isfinished === null) {
+                                throw new Error(getsingle.message);
+                            } else if (getsingle.isfinished === true) {
+                                data[db][table].push(...getsingle.data);
+                                offset = 0;
+                                break;
+                            } else {
+                                // This is never a never ending loop if the function keep giving rows then row will completely accuired at the end
+                                data[db][table].push(...getsingle.data);
+                                offset = getsingle.offset;
+                                continue;
+                            }
                         }
                     } else if (result.status === "error") {
+                        if (result.count === 0) {
+                            throw new Error("Having problem getting rows. Plese try again.");
+                        } else {
+                            if (errorcount >= mec) {
+                                throw new Error("Having problem getting rows. Plese try again.");
+                            }
+                            data[db][table].push(...result.data);
+                            offset = result.nextOffset; // Update offset for next chunk
+                            errorcount++;
+                            continue;
+                        }
+                    } else {
                         console.error(cstyler.red("Error fetching rows:"), result.message);
                         if (errorcount < mec) {
                             errorcount++;
                             continue; // Try fetching the same chunk again
                         } else {
                             console.error(cstyler.red("Repeated errors fetching rows."));
-                            errorHappened = true;
-                            errorcount = 0; // Reset error count for next table
-                            break; // Skip to next table
+                            throw new Error(`Unable to get row data from Database: ${db} Table: ${table} Offset: ${offset}`);
                         }
-                    } else {
-                        throw new Error(`Unable to get row data from Database: ${db} Table: ${table} Offset: ${offset}`)
                     }
                 }
             }
         }
-        console.log(cstyler.green("Successfully done requesting and storing all the row."));
-        return data;
+        // Lets write file after getting all rows
+        errorcount = 0;
+        while (errorcount < mec) {
+            data = await makeDataReadable(config, data);
+            let processedData = {};
+            if (data.success === null) {
+                if (data.haveVal === true) {
+                    // Lets store data on variable
+                    processedData = data.processed;
+                    data = data.data;
+                    processedData = cleanVariable(data);
+                    // cleaning after declaration to keep memory safe
+                    processedData = cleanVariable(processedData);
+                    // lets data save to file
+                    const nextFile = await filefunctions.getNextFileName(links.database);
+                    if (nextFile === null) {
+                        throw new Error("Having problem processing next file name for internal file functions.");
+                    }
+                    const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
+                    const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
+                    if (writeFile === null) {
+                        throw new Error("Having problem writing database files to directory");
+                    }
+                    processedData = {}; // Lets clear the memory
+                } else {
+                    errorcount++;
+                    continue;
+                }
+            } else {
+                if (data.success === true) {
+                    processedData = data.processed;
+                    // cleaning after declaration to keep memory safe
+                    processedData = cleanVariable(processedData);
+                } else {
+                    processedData = data.processed;
+                    data = data.data;
+                    processedData = cleanVariable(data);
+                    // cleaning after declaration to keep memory safe
+                    processedData = cleanVariable(processedData);
+                }
+                // Variable cleening done
+                // lets data save to file
+                const nextFile = await filefunctions.getNextFileName(links.database);
+                if (nextFile === null) {
+                    throw new Error("Having problem processing next file name for internal file functions.");
+                }
+                const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
+                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
+                if (writeFile === null) {
+                    throw new Error("Having problem writing database files to directory");
+                }
+                processedData = {}; // Lets clear the memory
+                if (haveRowData(data)) {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        }
+        if (haveRowData(data)) {
+            throw new Error("Unable to process row data.");
+        } else {
+            console.log(cstyler.bold.underline.green("Successfully done requesting and storing all the row."));
+            return true;
+        }
     } catch (err) {
         console.error(err.message);
         return { success: null, message: err.message };
@@ -1058,9 +1240,10 @@ module.exports = {
     checkMemoryLimit,
     toBuffer,
     bufferToHex,
+    totalRowCount,
     getallrows,
     getColumnValueByOffset,
     getRowsUntilMemoryLimit,
     getSingleRowAsJson,
-    _subSavefile,
+    subSaveFile,
 }

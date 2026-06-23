@@ -195,42 +195,64 @@ async function getApplicationRoot() {
     return process.cwd();
 }
 async function getFolderTree(dirPath) {
+    const maxRetries = 3;
     const tree = {};
-    // Convert the initial input to an absolute path once
     const absoluteDirPath = path.resolve(dirPath);
 
-    try {
-        const items = await fs.readdir(absoluteDirPath);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const items = await fs.readdir(absoluteDirPath);
 
-        for (const item of items) {
-            const fullPath = path.join(absoluteDirPath, item);
-            const stats = await fs.stat(fullPath);
-            const isDirectory = stats.isDirectory();
+            for (const item of items) {
+                const fullPath = path.join(absoluteDirPath, item);
+                const stats = await fs.stat(fullPath);
+                const isDirectory = stats.isDirectory();
 
-            tree[item] = {
-                name: item,
-                path: fullPath, // This is now guaranteed to be absolute
-                type: isDirectory ? 'folder' : 'file',
-                size: stats.size,
-                extension: isDirectory ? null : path.extname(item)
-            };
+                tree[item] = {
+                    name: item,
+                    path: fullPath, // Guaranteed absolute
+                    type: isDirectory ? 'folder' : 'file',
+                    size: stats.size,
+                    extension: isDirectory ? null : path.extname(item)
+                };
 
-            // Recursively get contents if it's a folder
-            if (isDirectory) {
-                tree[item].contents = await getFolderTree(fullPath);
+                // Recursively get contents if it's a folder
+                if (isDirectory) {
+                    const nestedContents = await getFolderTree(fullPath);
+                    // If a nested crawl completely failed, we forward null or keep moving
+                    tree[item].contents = nestedContents;
+                }
+            }
+
+            // 🏁 Success! Return the tree layout object and exit the loop.
+            return tree;
+
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed reading directory ${absoluteDirPath}: ${err.message}`);
+
+            if (attempt < maxRetries) {
+                // Wait 1 second before trying to read the directory structure again
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                // All 3 tries failed completely
+                console.error(`❌ All attempts failed. Error reading directory ${absoluteDirPath}:`, err.message);
+                return null;
             }
         }
-
-        return tree;
-    } catch (err) {
-        // If the path doesn't exist or is inaccessible
-        console.error(`Error reading directory ${absoluteDirPath}:`, err.message);
-        return null;
     }
 }
 async function getNextFileName(filepath) {
     let maxCount = 0;
     let folderPath = path.resolve(filepath);
+    const ifFolder = await isFolderPath(folderPath);
+    if(ifFolder === null){
+        const mkdir = makeDirectory(folderPath);
+        if(mkdir === null){
+            return null;
+        }
+    } else if (ifFolder === false){
+        folderPath = path.dirname(folderPath);
+    }
     const result = await getFolderTree(folderPath);
     if (result === null) return null;
     if (!result) return null;
@@ -292,23 +314,43 @@ async function readJsonFile(filePath) {
     }
 }
 async function writeJsonFile(filePath, data) {
+    const maxRetries = 3;
+
+    // 💡 DEFENSIVE CHECK: Break immediately if path is an existing directory
     try {
-        // Ensure the directory exists
-        const dir = path.dirname(filePath);
-        await fs.mkdir(dir, { recursive: true });
+        const stats = await fs.stat(filePath);
+        if (stats.isDirectory()) {
+            const fileName = await getNextFileName(filePath);
+            if (fileName === null) {
+                console.error("Having problem getting next file name.");
+                return null;
+            }
+            filePath = path.join(filePath, `${String(fileName)}.json`);
+            console.log("filepath if undefined:", filePath)
+        }
+    } catch (e) {
+        // Path doesn't exist yet, which is perfect! Proceed safely.
+    }
 
-        // Convert the data object to a JSON string with indentation
-        const jsonString = JSON.stringify(data, null, 2);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const dir = path.dirname(filePath);
+            await fs.mkdir(dir, { recursive: true });
 
-        // Write the JSON string to the file
-        await fs.writeFile(filePath, jsonString, "utf-8");
-        // const successMessage = `File written successfully to ${filePath}`;
-        // console.log(successMessage);
-        return true;
-    } catch (error) {
-        // Handle errors (e.g., permission issues, invalid data)
-        console.error(`Error writing JSON file at ${filePath}:`, error);
-        return null;
+            const jsonString = JSON.stringify(data, null, 2);
+            await fs.writeFile(filePath, jsonString, "utf-8");
+
+            return true;
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed writing JSON file at ${filePath}: ${error.message}`);
+
+            if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All attempts failed. Error writing JSON file at ${filePath}:`, error);
+                return null;
+            }
+        }
     }
 }
 // Adm Zip
@@ -461,18 +503,30 @@ async function deleteSingleFile(filePath) {
     }
 }
 async function deletePath(targetPath) {
-    try {
-        // 'recursive: true' handles nested folders/files
-        // 'force: true' prevents errors if the path doesn't exist
-        await fs.rm(targetPath, { recursive: true, force: true });
+    const maxRetries = 3;
 
-        return true;
-    } catch (err) {
-        // This usually triggers for permission issues (EACCES) 
-        // or if the file is currently locked by another process (EBUSY)
-        console.error(`Delete Error [${targetPath}]:`, err.message);
-        console.error(`Delete Error code [${targetPath}]:`, err.code);
-        return false;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // 'recursive: true' handles nested folders/files
+            // 'force: true' prevents errors if the path doesn't exist
+            await fs.rm(targetPath, { recursive: true, force: true });
+
+            // 🏁 Success! The path was deleted or didn't exist to begin with.
+            return true;
+
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed to delete [${targetPath}]: ${err.message}`);
+
+            if (attempt < maxRetries) {
+                // Wait 1 second to let OS locks (EBUSY / EACCES) clear out before trying again
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                // All 3 tries failed completely
+                console.error(`❌ All attempts failed. Delete Error [${targetPath}]:`, err.message);
+                console.error(`❌ Delete Error code [${targetPath}]:`, err.code);
+                return false;
+            }
+        }
     }
 }
 async function getCustomFileSizesSumInMB(pathsToCalculate, excludeList = []) {

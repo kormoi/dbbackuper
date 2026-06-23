@@ -311,7 +311,7 @@ async function getmetadata(config, dbs = []) {
                 }
             }
         }
-        const raw = jsondata;
+        const raw = structuredClone(jsondata);
         // lets check if there is any reverse loop name or not
         for (const item of Object.keys(jsondata)) {
             for (const tables of Object.keys(jsondata[item])) {
@@ -327,6 +327,7 @@ async function getmetadata(config, dbs = []) {
                 jsondata[getreverseloop[0]] = jsondata[item];
             }
         }
+        
         console.log(cstyler.green.bold("Successfully retrieved database, table and column structure metadata in JSON format."));
         return { dbtaskerdata: jsondata, raw: raw };
     } catch (err) {
