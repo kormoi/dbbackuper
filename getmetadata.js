@@ -3,6 +3,8 @@ const cstyler = require('cstyler');
 const mysql = require('mysql2/promise');
 const path = require("path");
 const fs = require('fs').promises;
+const ff = require("./filefunctions");
+const links = require("./links");
 
 
 
@@ -311,25 +313,31 @@ async function getmetadata(config, dbs = []) {
                 }
             }
         }
-        const raw = structuredClone(jsondata);
+        let dbTaskerData = structuredClone(jsondata);
         // lets check if there is any reverse loop name or not
-        for (const item of Object.keys(jsondata)) {
-            for (const tables of Object.keys(jsondata[item])) {
+        for (const item of Object.keys(dbTaskerData)) {
+            for (const tables of Object.keys(dbTaskerData[item])) {
                 const getreverseloop = fncs.reverseLoopName(tables);
                 if (Array.isArray(getreverseloop)) {
-                    jsondata[item][getreverseloop[0]] = jsondata[item][tables];
+                    dbTaskerData[item][getreverseloop[0]] = dbTaskerData[item][tables];
                 }
             }
         }
-        for (const item of Object.keys(jsondata)) {
+        for (const item of Object.keys(dbTaskerData)) {
             const getreverseloop = fncs.reverseLoopName(item);
             if (Array.isArray(getreverseloop)) {
-                jsondata[getreverseloop[0]] = jsondata[item];
+                dbTaskerData[getreverseloop[0]] = dbTaskerData[item];
             }
         }
-        
+        const rawFilelink = path.join(links.database, "raw.json");
+        const writeRaw = await ff.writeJsonFile(rawFilelink, jsondata);
+        const dbTaskerFilelink = path.join(links.database, "dbtaskerdata.json");
+        const writeDbTaskerData = await ff.writeJsonFile(dbTaskerFilelink, dbTaskerData);
+        if(writeRaw === null || writeDbTaskerData === null){
+            throw new Error("Unavle to save Database metadata as file.");
+        }
         console.log(cstyler.green.bold("Successfully retrieved database, table and column structure metadata in JSON format."));
-        return { dbtaskerdata: jsondata, raw: raw };
+        return { dbtaskerdata: dbTaskerData, raw: jsondata };
     } catch (err) {
         cstyler.error(err.message);
         return null;

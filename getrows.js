@@ -674,7 +674,7 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
         const totalRows = countResult[0].total;
 
         const heapLimit = v8.getHeapStatistics().heap_size_limit;
-        const memoryThreshold = heapLimit * (thresholdPercent / 100); // threshold
+        const memoryThreshold = heapLimit * (thresholdPercent / 100);
 
         while (currentOffset < totalRows) {
             // Check memory BEFORE the next chunk
@@ -684,26 +684,28 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
                 status = "memory_limit";
                 break;
             }
-            // Lets check available memory size
+
             const memoryAvl = filefunctions.getMemoryHeaps();
             const avlMemSize = memoryAvl.availableMB - ((100 - thresholdPercent) * memoryAvl.limitMB / 100);
-            const rowLeft = totalRows - (currentOffset - 1);
-            // Lets get chunk size
-            const getChunkSizeFromTargetMB = await getmtd.getChunkSizeFromTargetMB(config, databaseName, tableName, currentOffset, avlMemSize);
+            const rowLeft = totalRows - currentOffset; // Optimized syntax layout
+
+            // Fetch layout dimensions for dynamic throttling
+            let getChunkSizeFromTargetMB = await getmtd.getChunkSizeFromTargetMB(config, databaseName, tableName, currentOffset, avlMemSize);
+
             if (typeof getChunkSizeFromTargetMB === 'number' && getChunkSizeFromTargetMB > 0) {
                 if (getChunkSizeFromTargetMB > 5000) {
                     chunkSize = 5000;
                 } else if (getChunkSizeFromTargetMB < chunkSize) {
-                    chunkSize = getChunkSizeFromTargetMB;
+                    // 💡 FIX: Don't drop down to 0; enforce a minimal fallback slice of 100 rows
+                    chunkSize = Math.max(100, getChunkSizeFromTargetMB);
                 }
             } else if (getChunkSizeFromTargetMB === 0) {
-                // before break the loop lets check the status
                 if (totalRows <= currentOffset) {
                     status = "completed";
                 } else {
                     status = "memory_limit";
                 }
-                break; // if no row can be acuired no need to run
+                break;
             } else {
                 throw new Error("Unable to get chunk size metadata from given size in MB when trying to get rows until memory limit.");
             }
@@ -723,13 +725,11 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
                 const blobColumns = fields.filter(f => [249, 250, 251, 252].includes(f.columnType)).map(f => f.name);
 
                 const processedRows = rows.map(row => {
-                    // Parse JSON columns
                     jsonColumns.forEach(col => {
                         if (row[col] && typeof row[col] === 'string') {
                             try { row[col] = JSON.parse(row[col]); } catch (e) { }
                         }
                     });
-                    // Convert Image/BLOB to Base64
                     blobColumns.forEach(col => {
                         if (row[col] instanceof Buffer) {
                             row[col] = row[col].toString('base64');
@@ -741,10 +741,20 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
                 allData = allData.concat(processedRows);
                 currentOffset += rows.length;
 
+                // 🌟 NEW: Enforce the 1 Million Row Hard Cap Check
+                if (allData.length >= 100000) {
+                    console.warn(`Hard limit reached: Extracted ${allData.length} rows.`);
+                    status = "count_limit";
+                    break;
+                }
+
+                // If a chunk query returns empty, terminate loop to prevent stalling
+                if (rows.length === 0) break;
+
             } catch (chunkErr) {
                 console.error(`Error at offset ${currentOffset}:`, chunkErr.message);
                 status = "error";
-                break; // Stop loop but return what we already collected
+                break;
             }
         }
         return {
@@ -752,7 +762,7 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
             count: allData.length,
             nextOffset: currentOffset,
             totalRows: totalRows,
-            status: status, // "completed", "memory_limit", or "error"
+            status: status,
             isFinished: currentOffset >= totalRows
         };
     } catch (fatalErr) {
@@ -843,7 +853,6 @@ async function writeDataToFileBig(data) {
     }
 }
 async function makeDataReadable(config, data) {
-    // 💡 FIX 1: Declared outside try so the catch block can see it safely
     let savableData = {};
 
     try {
@@ -997,12 +1006,75 @@ function haveRowData(data) {
     }
     return false;
 }
+function rowDataCount(data) {
+    let count = 0;
+    for (const db of Object.keys(data)) {
+        for (const table of Object.keys(data[db])) {
+            if (data[db][table].length > 0) {
+                count = count + data[db][table].length;
+            }
+        }
+    }
+    return count;
+}
+async function processData(config, data) {
+    let processedData = {};
+    try {
+        while (true) {
+            data = await makeDataReadable(config, data);
+            if (data.success === null) {
+                if (data.haveVal === true) {
+                    // Lets store data on variable
+                    processedData = fncs.mergeObject(processedData, data.processed);
+                    data = data.data;
+                    processedData = cleanVariable(data);
+                    // cleaning after declaration to keep memory safe
+                    processedData = cleanVariable(processedData);
+                    continue;
+                } else {
+                    throw new Error(data.message);
+                }
+            } else {
+                if (data.success === true) {
+                    processedData = fncs.mergeObject(processedData, data.processed);
+                    data = data.data;
+                    // cleaning after declaration to keep memory safe
+                    processedData = cleanVariable(processedData);
+                } else {
+                    processedData = fncs.mergeObject(processedData, data.processed);
+                    data = data.data;
+                    // cleaning after declaration to keep memory safe
+                    data = cleanVariable(data);
+                    processedData = cleanVariable(processedData);
+                }
+                // Variable cleening done
+                // lets data save to file
+                const nextFile = await filefunctions.getNextFileName(links.database);
+                if (nextFile === null) {
+                    throw new Error("Having problem processing next file name for internal file functions.");
+                }
+                const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
+                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
+                if (writeFile === null) {
+                    throw new Error("Having problem writing database files to directory");
+                }
+                processedData = {}; // Lets clear the memory
+                if (!haveRowData(data)) {
+                    break;
+                }
+            }
+        }
+        return true;
+    } catch (err) {
+        console.error("Having problem processign data. Error message: ", err.message);
+        return { success: null, data: data };
+    }
+}
 // Lets get all the rows of all tables of all databases and write to file
 async function getallrows(config, jsondata, forceDownload = false) {
     try {
         let data = {};
         let count = 0;
-        let isfinished = false;
         let offset = 0;
         let errorcount = 0;
         // Lets get memory status before starting the process
@@ -1027,7 +1099,7 @@ async function getallrows(config, jsondata, forceDownload = false) {
                 if (!fncs.isJsonObject(jsondata[db][table])) {
                     continue;
                 }
-                console.log('Working on table: ', table);
+                console.log(`Working on ${cstyler.purple('Database:')} ${cstyler.blue(db)} ${cstyler.purple('Table:')} ${cstyler.blue(table)}`);
                 if (!data[db].hasOwnProperty(table)) data[db][table] = []; // Initialize as empty array to store rows
                 // Lets check if table have any row or not
                 const rowCount = await totalRowCount(config, db, table);
@@ -1036,7 +1108,7 @@ async function getallrows(config, jsondata, forceDownload = false) {
                 } else if (rowCount === 0) {
                     continue;
                 }
-                console.log('Total row count ', rowCount)
+                console.log(cstyler.blue('Total row count '), rowCount);
                 // lets get all the rows of this table
                 while (true) {
                     const result = await getRowsUntilMemoryLimit(config, db, table, offset, 70, chunkSize);
@@ -1044,9 +1116,27 @@ async function getallrows(config, jsondata, forceDownload = false) {
                         offset = 0;
                         data[db][table].push(...result.data);
                         offset = 0; // Reset offset for next table
-                        isfinished = true;
                         errorcount = 0; // Reset error count for next table
+                        if (rowDataCount(data) > 50000) {
+                            const pd = await processData(config, data);
+                            if (pd === null) {
+                                throw new Error("Having problem processing data.");
+                            }
+                            data = {};
+                            data[db] = {};
+                        }
                         break;
+                    } else if (result.status === "count_limit") {
+                        offset = result.nextOffset;
+                        data[db][table].push(...result.data);
+                        const pd = await processData(config, data);
+                        if (pd === null) {
+                            throw new Error("Having problem processing data.");
+                        }
+                        data = {};
+                        data[db] = {};
+                        data[db][table] = [];
+                        continue;
                     } else if (result.status === "memory_limit") {
                         errorcount = 0;
                         offset = result.nextOffset;
@@ -1055,58 +1145,13 @@ async function getallrows(config, jsondata, forceDownload = false) {
                         data[db][table].push(...result.data);
                         result.data = null; // Clear chunk data to free memory
                         offset = result.nextOffset; // Update offset for next chunk
-                        data = await makeDataReadable(config, data);
-                        let processedData = {};
-                        if (data.success === null) {
-                            if (data.haveVal === true) {
-                                // Lets store data on variable
-                                processedData = data.processed;
-                                data = data.data;
-                                processedData = cleanVariable(data);
-                                // cleaning after declaration to keep memory safe
-                                processedData = cleanVariable(processedData);
-                                // lets data save to file
-                                const nextFile = await filefunctions.getNextFileName(links.database);
-                                if (nextFile === null) {
-                                    throw new Error("Having problem processing next file name for internal file functions.");
-                                }
-                                const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
-                                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
-                                if (writeFile === null) {
-                                    throw new Error("Having problem writing database files to directory");
-                                }
-                                processedData = {}; // Lets clear the memory
-                            } else {
-                                throw new Error(data.message);
-                            }
-                        } else {
-                            if (data.success === true) {
-                                processedData = data.processed;
-                                data = {};
-                                data[db] = {};
-                                data[db][table] = [];
-                                // cleaning after declaration to keep memory safe
-                                processedData = cleanVariable(processedData);
-                            } else {
-                                processedData = data.processed;
-                                data = data.data;
-                                processedData = cleanVariable(data);
-                                // cleaning after declaration to keep memory safe
-                                processedData = cleanVariable(processedData);
-                            }
-                            // Variable cleening done
-                            // lets data save to file
-                            const nextFile = await filefunctions.getNextFileName(links.database);
-                            if (nextFile === null) {
-                                throw new Error("Having problem processing next file name for internal file functions.");
-                            }
-                            const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
-                            const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
-                            if (writeFile === null) {
-                                throw new Error("Having problem writing database files to directory");
-                            }
-                            processedData = {}; // Lets clear the memory
+                        const pd = await processData(config, data);
+                        if (pd === null) {
+                            throw new Error("Having problem processing data.");
                         }
+                        data = {};
+                        data[db] = {};
+                        data[db][table] = [];
                         // If there is enough memory but still there is a problem
                         if (isNearlySame) {
                             // Lets run single row operation
@@ -1166,69 +1211,12 @@ async function getallrows(config, jsondata, forceDownload = false) {
         }
         // Lets write file after getting all rows
         errorcount = 0;
-        while (errorcount < mec) {
-            data = await makeDataReadable(config, data);
-            let processedData = {};
-            if (data.success === null) {
-                if (data.haveVal === true) {
-                    // Lets store data on variable
-                    processedData = data.processed;
-                    data = data.data;
-                    processedData = cleanVariable(data);
-                    // cleaning after declaration to keep memory safe
-                    processedData = cleanVariable(processedData);
-                    // lets data save to file
-                    const nextFile = await filefunctions.getNextFileName(links.database);
-                    if (nextFile === null) {
-                        throw new Error("Having problem processing next file name for internal file functions.");
-                    }
-                    const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
-                    const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
-                    if (writeFile === null) {
-                        throw new Error("Having problem writing database files to directory");
-                    }
-                    processedData = {}; // Lets clear the memory
-                } else {
-                    errorcount++;
-                    continue;
-                }
-            } else {
-                if (data.success === true) {
-                    processedData = data.processed;
-                    // cleaning after declaration to keep memory safe
-                    processedData = cleanVariable(processedData);
-                } else {
-                    processedData = data.processed;
-                    data = data.data;
-                    processedData = cleanVariable(data);
-                    // cleaning after declaration to keep memory safe
-                    processedData = cleanVariable(processedData);
-                }
-                // Variable cleening done
-                // lets data save to file
-                const nextFile = await filefunctions.getNextFileName(links.database);
-                if (nextFile === null) {
-                    throw new Error("Having problem processing next file name for internal file functions.");
-                }
-                const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
-                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
-                if (writeFile === null) {
-                    throw new Error("Having problem writing database files to directory");
-                }
-                processedData = {}; // Lets clear the memory
-                if (haveRowData(data)) {
-                    continue;
-                } else {
-                    break;
-                }
-            }
+        const pd = await processData(config, data);
+        if (pd === null) {
+            throw new Error("Having problem processing data.");
         }
-        if (haveRowData(data)) {
-            throw new Error("Unable to process row data.");
-        } else {
-            console.log(cstyler.bold.underline.green("Successfully done requesting and storing all the row."));
-            return true;
-        }
+        console.log(cstyler.bold.underline.green("Successfully done requesting and storing all the row."));
+        return true;
     } catch (err) {
         console.error(err.message);
         return { success: null, message: err.message };
