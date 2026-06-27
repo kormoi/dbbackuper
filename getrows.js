@@ -7,7 +7,7 @@ const { createReadStream, createWriteStream, existsSync, read } = require('fs');
 const { pipeline } = require('stream/promises');
 const path = require('path');
 const { count } = require('console');
-const filefunctions = require('./filefunctions');
+const ff = require('./filefunctions');
 const getmtd = require("./getmetadata");
 const links = require("./links");
 const { off } = require('cluster');
@@ -25,7 +25,7 @@ const { off } = require('cluster');
 const mec = 3; // max error count
 
 function checkMemoryLimit(value = 90, memory = 300) {
-    const memStatus = filefunctions.getMemoryHeaps();
+    const memStatus = ff.getMemoryHeaps();
     if (memStatus.percentage > value || memStatus.availableMB < memory) {
         return false; // Memory limit reached
     }
@@ -112,13 +112,15 @@ function toReadable(value) {
     // Lets check if previously processed or not
     if (fncs.isJsonObject(value) && value.hasOwnProperty("type") && value.hasOwnProperty("ischanged") && value.hasOwnProperty("value")) {
         return value;
+    } else if(fncs.isJsonObject(value) && value.hasOwnProperty("isSaved") && value.hasOwnProperty("fileName") && value.hasOwnProperty("extention") && value.hasOwnProperty("filepath") && value.hasOwnProperty("type")){
+        return value;
     }
     // 1. ADVANCED SPATIAL & GEOMETRY LAYER (MySQL / PG Support)
     if (value !== null && typeof value === 'object') {
 
         // --- Postgres/PostGIS direct object driver structures ---
         if (value.x !== undefined && value.y !== undefined) {
-            return { ischanged: true, value: `POINT(${value.x} ${value.y})`, type: 'point' };
+            return `ST_GeomFromText('POINT(${value.x} ${value.y})')`;
         }
 
         // --- MySQL Spatial Buffer Parser ---
@@ -141,7 +143,7 @@ function toReadable(value) {
         const buf = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 
         // FIX: Converting to Base64 prevents JSON stringify from corrupting/bloating the buffer
-        return { ischanged: true, value: buf.toString('base64'), type: 'buffer', from: 'base64' };
+        return { ischanged: true, value: buf.toString('base64'), type: 'base64', from: 'buffer' };
     }
 
     // 3. BigInt
@@ -172,7 +174,7 @@ function toReadable(value) {
         if (value.length % 2 === 0 && value.length > 64) {
             const testHexBuf = Buffer.from(value, 'hex');
             if (testHexBuf.toString('hex').toLowerCase() === value.toLowerCase()) {
-                return { ischanged: false, value: value.toUpperCase(), type: 'hex' };
+                return value.toUpperCase();
             }
         }
 
@@ -180,7 +182,7 @@ function toReadable(value) {
             if (!/[\s]/.test(value)) {
                 const testB64Buf = Buffer.from(value, 'base64');
                 if (testB64Buf.toString('base64') === value) {
-                    return { ischanged: false, value: value, type: 'base64' };
+                    return value;
                 }
             }
         }
@@ -310,7 +312,7 @@ function restoreSpecialNumber(savedData) {
 // Fetch rows in chunks until memory limit is approached
 function getChunkSize(memStatus = null) {
     if (memStatus === null) {
-        memStatus = filefunctions.getMemoryHeaps();
+        memStatus = ff.getMemoryHeaps();
     }
     let chunkSize = 1000; // Default chunk size for high memory machines
     if (memStatus.availableMB < 300) {
@@ -418,7 +420,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                 break;
             } else if (fncs.isJsonObject(rowmetadata)) {
                 // Lets check if total row size bigger than available memory ram or not
-                const memheap = filefunctions.getMemoryHeaps();
+                const memheap = ff.getMemoryHeaps();
                 if (rowmetadata.totalRowSizeinMB > (memheap.availableMB - 200)) {
                     // Lets check each column if we can save them one by one
                     let skiprow = false;
@@ -685,7 +687,7 @@ async function getRowsUntilMemoryLimit(config, databaseName, tableName, startOff
                 break;
             }
 
-            const memoryAvl = filefunctions.getMemoryHeaps();
+            const memoryAvl = ff.getMemoryHeaps();
             const avlMemSize = memoryAvl.availableMB - ((100 - thresholdPercent) * memoryAvl.limitMB / 100);
             const rowLeft = totalRows - currentOffset; // Optimized syntax layout
 
@@ -782,8 +784,8 @@ async function subSaveFile(data, filePath = null) {
             filePath = "./backupfiles/backup/database/files/";
             folderPath = path.resolve(filePath);
         }
-        const fileNameWithoutExt = await filefunctions.getNextFileName(folderPath);
-        const savefile = await filefunctions.saveDataToFile(data, folderPath, String(fileNameWithoutExt));
+        const fileNameWithoutExt = await ff.getNextFileName(folderPath);
+        const savefile = await ff.saveDataToFile(data, folderPath, String(fileNameWithoutExt));
         // { success: false, isText: true, data: data }
         // { success: true, path: finalPath, fileName: `${fileNameWithoutExt}.${detectedExt}`, extension: detectedExt };
         let returndata = {};
@@ -935,7 +937,7 @@ async function makeDataReadable(config, data) {
                                 // 💡 FIX 4: Scan the partially mutated row data safely for active file descriptors
                                 for (const item of Object.keys(rowData)) {
                                     if (rowData[item] && typeof rowData[item] === 'object' && Object.hasOwn(rowData[item], "isSaved") && rowData[item].isSaved === true) {
-                                        await filefunctions.deletePath(path.resolve(rowData[item].fullpath));
+                                        await ff.deletePath(path.resolve(rowData[item].fullpath));
                                     }
                                 }
 
@@ -957,13 +959,6 @@ async function makeDataReadable(config, data) {
         // 🟢 Success: savableData is accessible here now!
         return { success: null, data: data, processed: savableData, message: err.message, haveVal: haveRowData(savableData) };
     }
-}
-function memDifPercent(memory) {
-    const memStatus = filefunctions.getMemoryHeaps();
-    const perc = memStatus.percentage - memory.percentage;
-    const inMB = memStatus.availableMB - memory.availableMB;
-    if (perc >= 25 && inMB >= 200) return true;
-    return false; // Memory is within limits
 }
 function isNearlySame(num1, num2, tolerancePercentage) {
     // 1. Handle the exact match edge case instantly
@@ -1049,12 +1044,12 @@ async function processData(config, data) {
                 }
                 // Variable cleening done
                 // lets data save to file
-                const nextFile = await filefunctions.getNextFileName(links.database);
+                const nextFile = await ff.getNextFileName(links.database);
                 if (nextFile === null) {
                     throw new Error("Having problem processing next file name for internal file functions.");
                 }
                 const nextFilePath = path.join(links.database, `${String(nextFile)}.json`);
-                const writeFile = await filefunctions.writeJsonFile(path.resolve(nextFilePath), processedData);
+                const writeFile = await ff.writeJsonFile(path.resolve(nextFilePath), processedData);
                 if (writeFile === null) {
                     throw new Error("Having problem writing database files to directory");
                 }
@@ -1078,16 +1073,16 @@ async function getallrows(config, jsondata, forceDownload = false) {
         let offset = 0;
         let errorcount = 0;
         // Lets get memory status before starting the process
-        const memStatus = filefunctions.getMemoryHeaps(); // if memory limit we will check the differance of memory to check the size of data stored on variable and memory we have
+        const memStatus = ff.getMemoryHeaps(); // if memory limit we will check the differance of memory to check the size of data stored on variable and memory we have
         let chunkSize = getChunkSize(memStatus);
         if (chunkSize === null) {
             return null;
         }
         // Lets check if backup folder exist if not
         const folderPath = path.resolve(links.database);
-        const isfolderpath = await filefunctions.isFolderPath(folderPath);
+        const isfolderpath = await ff.isFolderPath(folderPath);
         if (!isfolderpath) {
-            const createfolder = await filefunctions.makeDirectory(folderPath);
+            const createfolder = await ff.makeDirectory(folderPath);
             if (!createfolder) {
                 console.error(cstyler.red("Error creating backup folder. Please check permissions and try again."));
                 return null;
@@ -1140,7 +1135,7 @@ async function getallrows(config, jsondata, forceDownload = false) {
                     } else if (result.status === "memory_limit") {
                         errorcount = 0;
                         offset = result.nextOffset;
-                        const getmemheap = filefunctions.getMemoryHeaps();
+                        const getmemheap = ff.getMemoryHeaps();
                         const isNearlySame = isNearlySame(memStatus.availableMB, getmemheap.availableMB, 35);
                         data[db][table].push(...result.data);
                         result.data = null; // Clear chunk data to free memory
@@ -1156,7 +1151,7 @@ async function getallrows(config, jsondata, forceDownload = false) {
                         if (isNearlySame) {
                             // Lets run single row operation
                             // now we have enough memory to run next row process
-                            const getmemheap = filefunctions.getMemoryHeaps();
+                            const getmemheap = ff.getMemoryHeaps();
                             let singleChunk = 0;
                             if (chunkSize > 200) {
                                 singleChunk = 200;
@@ -1226,9 +1221,12 @@ async function getallrows(config, jsondata, forceDownload = false) {
 module.exports = {
     toReadable,
     checkMemoryLimit,
+    isNearlySame,
     toBuffer,
     bufferToHex,
     totalRowCount,
+    toReadable,
+    makeDataReadable,
     getallrows,
     getColumnValueByOffset,
     getRowsUntilMemoryLimit,

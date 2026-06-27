@@ -3,6 +3,7 @@ const fncs = require('./functions');
 const cstyler = require('cstyler');
 const path = require("path");
 const fs = require("fs");
+const links = require("./links.js");
 
 const filefunc = require("./filefunctions.js");
 const getmetadata = require("./getmetadata");
@@ -13,12 +14,13 @@ const rows = require("./rows.js");
 async function createbackup(config, dbs = [], outputpath = null) {
     try {
         // lets make sure we have the output directory
-        const result = await filefunc.makeDirectory("./backupfiles/backup");
+        const 
+        const result = await filefunc.makeDirectory(links.programfiles);
         if(!result) {
             throw new Error(cstyler.red.bold("Could not create output directory. Please check permissions and try again."));
         }
         // lets clean the folder if there are files in it
-        const cleanresult = await filefunc.clearFolderContents("./backupfiles/backup");
+        const cleanresult = await filefunc.clearFolderContents(links.programfiles);
         if(!cleanresult) {
             throw new Error(cstyler.red.bold("Could not clean output directory. Please check permissions and try again."));
         }

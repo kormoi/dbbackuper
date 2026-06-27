@@ -881,16 +881,16 @@ function hasArray(doesithave, amiin) {
   return true;
 }
 function getRandomItem(array) {
-    // Return undefined or handle empty arrays gracefully
-    if (!Array.isArray(array) || array.length === 0) {
-        return undefined; 
-    }
-    
-    // Calculate a random valid index
-    const randomIndex = Math.floor(Math.random() * array.length);
-    
-    // Return the item at that index
-    return array[randomIndex];
+  // Return undefined or handle empty arrays gracefully
+  if (!Array.isArray(array) || array.length === 0) {
+    return undefined;
+  }
+
+  // Calculate a random valid index
+  const randomIndex = Math.floor(Math.random() * array.length);
+
+  // Return the item at that index
+  return array[randomIndex];
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -2091,7 +2091,7 @@ async function getAllRowsAccurately(config, databaseName, tableName) {
       `SELECT COUNT(*) AS total FROM \`${databaseName}\`.\`${tableName}\``
     );
     const totalRows = countResult[0].total;
-    console.log(`Starting export: ${totalRows} rows found.`);
+    console.log(`${cstyler.bold.yellow('Starting export:')} ${cstyler.yellow(totalRows)} ${cstyler.bold.green('rows')} ${cstyler.hex('#a7a7a7')('found on')} ${cstyler.purple('Database')} ${cstyler.blue(databaseName)} ${cstyler.purple('Table')} ${cstyler.blue(tableName)}.`);
 
     let allData = [];
     const chunkSize = 5000;
@@ -2137,6 +2137,140 @@ async function getAllRowsAccurately(config, databaseName, tableName) {
     if (connection) await connection.end();
   }
 }
+function validateDefault(columnType, defaultValue, length_value, nullable = false) {
+  const type = columnType.toUpperCase();
+
+  // If default is undefined (not explicitly set) → usually valid
+  if (defaultValue === undefined) return { valid: true, message: null };
+
+  // NULL default
+  if (defaultValue === null) {
+    return nullable
+      ? { valid: true, message: null }
+      : { valid: false, message: "Column does not allow NULL as default" };
+  }
+
+  // Numeric types
+  if (["INT", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "REAL"].includes(type)) {
+    if (typeof defaultValue === "number") return { valid: true, message: null };
+    if (typeof defaultValue === "string" && !isNaN(defaultValue)) return { valid: true, message: null };
+    return { valid: false, message: "Invalid numeric default value" };
+  }
+
+  // BIT type
+  if (type === "BIT") {
+    if (typeof defaultValue === "number" && (defaultValue === 0 || defaultValue === 1)) return { valid: true, message: null };
+    if (typeof defaultValue === "string" && (/^\d+$/.test(defaultValue) || /^0b[01]+$/i.test(defaultValue) || /^b'[01]+'$/i.test(defaultValue))) {
+      return { valid: true, message: null };
+    }
+    return { valid: false, message: "Invalid BIT default value. Use an integer, '0b0001', or 'b\'0001\'' format" };
+  }
+
+  // ENUM / SET
+  if (["ENUM", "SET"].includes(type)) {
+    // Quick adjustment if you pass it directly to validateDefault:
+    if (!length_value) return { valid: false, message: "Missing ENUM/SET options" };
+
+    // Correctly split options by stripping the single quotes wrapping each string element
+    let options = [];
+    if (Array.isArray(length_value)) {
+      options = length_value;
+    } else {
+      options = length_value.split(",").map(s => s.trim().replace(/^'(.*)'$/, "$1"));
+    }
+
+    if (type === "ENUM") {
+      if (options.includes(defaultValue)) return { valid: true, message: null };
+      return { valid: false, message: `Default value not in ENUM options [${options.join(", ")}]` };
+    } else { // SET allows multiple comma-separated values (e.g. "read,write")
+      const selectedValues = defaultValue.split(",").map(s => s.trim().replace(/^'(.*)'$/, "$1"));
+      const allValid = selectedValues.every(val => options.includes(val));
+      if (allValid) return { valid: true, message: null };
+      return { valid: false, message: `One or more defaults not in SET options [${options.join(", ")}]` };
+    }
+  }
+
+  // Character types
+  if (["CHAR", "VARCHAR"].includes(type)) {
+    return typeof defaultValue === "string"
+      ? { valid: true, message: null }
+      : { valid: false, message: "Default must be a string" };
+  }
+
+  // TEXT types
+  if (["TEXT", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT"].includes(type)) {
+    if (typeof defaultValue === "string") return { valid: true, message: null };
+    return { valid: false, message: "TEXT columns cannot have schema default values, but accept string payloads" };
+  }
+
+  // Binary / BLOB types
+  if (["BINARY", "VARBINARY"].includes(type)) {
+    return typeof defaultValue === "string" || Buffer.isBuffer(defaultValue) || /^x'[0-9A-Fa-f]+'$/.test(defaultValue)
+      ? { valid: true, message: null }
+      : { valid: false, message: "Invalid binary data format" };
+  }
+  if (["BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB"].includes(type)) {
+    if (typeof defaultValue === "string" || Buffer.isBuffer(defaultValue)) return { valid: true, message: null };
+    return { valid: false, message: "BLOB columns cannot have schema default values, but accept binary/string payloads" };
+  }
+
+  // Date / Time types
+  if (["DATETIME", "TIMESTAMP"].includes(type)) {
+    if (typeof defaultValue !== "string") return { valid: false, message: "Default must be a string for DATETIME/TIMESTAMP" };
+    if (/^(CURRENT_TIMESTAMP)(\(\d{0,6}\))?$/i.test(defaultValue)) return { valid: true, message: null };
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(defaultValue)) return { valid: true, message: null };
+    return { valid: false, message: "Invalid DATETIME/TIMESTAMP default format" };
+  }
+  if (type === "DATE") {
+    return /^\d{4}-\d{2}-\d{2}$/.test(defaultValue)
+      ? { valid: true, message: null }
+      : { valid: false, message: "Invalid DATE default format" };
+  }
+  if (type === "TIME") {
+    return /^\d{2}:\d{2}:\d{2}$/.test(defaultValue)
+      ? { valid: true, message: null }
+      : { valid: false, message: "Invalid TIME default format" };
+  }
+  if (type === "YEAR") {
+    return /^\d{4}$/.test(defaultValue)
+      ? { valid: true, message: null }
+      : { valid: false, message: "Invalid YEAR default format" };
+  }
+
+  // BOOLEAN
+  if (type === "BOOLEAN") {
+    return defaultValue === 0 || defaultValue === 1 || defaultValue === "true" || defaultValue === "false" || typeof defaultValue === "boolean"
+      ? { valid: true, message: null }
+      : { valid: false, message: "BOOLEAN default must be 0, 1, 'true', or 'false'" };
+  }
+
+  // JSON
+  if (type === "JSON") {
+    if (defaultValue === null || defaultValue === '{}' || defaultValue === '[]') return { valid: true, message: null };
+    if (typeof defaultValue === "object") return { valid: true, message: null };
+    if (typeof defaultValue === "string") {
+      try {
+        JSON.parse(defaultValue);
+        return { valid: true, message: null };
+      } catch (e) {
+        return { valid: false, message: "Invalid JSON string formatting payload structural syntax" };
+      }
+    }
+    return { valid: false, message: "JSON columns cannot have this default configuration" };
+  }
+
+  // Spatial / Geometry Types (Added support for runtime ST_ functions and aliases)
+  if (["GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION", "GEOMCOLLECTION"].includes(type)) {
+    // Valid if it's a runtime spatial function payload string
+    if (typeof defaultValue === "string" && /^ST_[A-Za-z0-9_]+\(.*\)$/i.test(defaultValue.trim())) {
+      return { valid: true, message: null };
+    }
+    return { valid: false, message: `${type} columns require valid ST_GeomFromText spatial function payloads` };
+  }
+
+  // Unknown types
+  return { valid: false, message: "Unknown column type or invalid default" };
+}
 async function addRecord(config, databaseName, tableName, validatedData) {
   let pool;
   try {
@@ -2145,13 +2279,34 @@ async function addRecord(config, databaseName, tableName, validatedData) {
       database: databaseName
     });
 
-    // Prepare and run INSERT
     const keys = Object.keys(validatedData);
-    const values = Object.values(validatedData).map(val => val === undefined ? null : val);
-    const placeholders = keys.map(() => '?').join(', ');
+    const placeholders = [];
+    const queryValues = [];
 
-    const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`;
-    const [result] = await pool.execute(query, values);
+    if (keys.length === 0) {
+      throw new Error("No payload parameters mapped to execute insertion.");
+    }
+
+    // Route fields to native keyword expressions or parameterized inputs
+    for (const key of keys) {
+      const value = validatedData[key];
+
+      if (value === "CURRENT_TIMESTAMP") {
+        placeholders.push("CURRENT_TIMESTAMP");
+      }
+      // Matches functional native keywords such as ST_GeomFromText or UNHEX
+      else if (typeof value === 'string' && /^(ST_[A-Za-z0-9_]+|UNHEX)\(.*\)$/i.test(value.trim())) {
+        placeholders.push(value.trim());
+      }
+      else {
+        placeholders.push('?');
+        queryValues.push(value); // Safe node buffer, array, number, or string value
+      }
+    }
+
+    // Build and execute the SQL string
+    const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders.join(', ')})`;
+    const [result] = await pool.execute(query, queryValues);
 
     return { success: true, result: result };
 

@@ -333,7 +333,7 @@ async function getmetadata(config, dbs = []) {
         const writeRaw = await ff.writeJsonFile(rawFilelink, jsondata);
         const dbTaskerFilelink = path.join(links.database, "dbtaskerdata.json");
         const writeDbTaskerData = await ff.writeJsonFile(dbTaskerFilelink, dbTaskerData);
-        if(writeRaw === null || writeDbTaskerData === null){
+        if (writeRaw === null || writeDbTaskerData === null) {
             throw new Error("Unavle to save Database metadata as file.");
         }
         console.log(cstyler.green.bold("Successfully retrieved database, table and column structure metadata in JSON format."));
@@ -572,15 +572,15 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
                     CHARACTER_MAXIMUM_LENGTH, 
                     NUMERIC_PRECISION, 
                     NUMERIC_SCALE,
-                    COLUMN_TYPE
+                    COLUMN_TYPE,
+                    IS_NULLABLE,
+                    COLUMN_DEFAULT
                  FROM INFORMATION_SCHEMA.COLUMNS 
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
                  ORDER BY ORDINAL_POSITION`,
                 [databaseName, tableName]
             );
 
-            // 🚨 CRITICAL FIX: If the table doesn't exist, schemaInfo length is 0
-            // We return false immediately because retrying won't make a missing table suddenly appear.
             if (schemaInfo.length === 0) {
                 console.error(cstyler.red(`❌ Table "${tableName}" does not exist in database "${databaseName}".`));
                 return false;
@@ -590,9 +590,26 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
 
             for (const col of schemaInfo) {
                 const type = col.DATA_TYPE.toUpperCase();
-                schemaMap[col.COLUMN_NAME] = { type };
 
-                if (col.CHARACTER_MAXIMUM_LENGTH !== null) {
+                // Establish base column details including constraints
+                schemaMap[col.COLUMN_NAME] = {
+                    type: type,
+                    nullable: col.IS_NULLABLE === 'YES',
+                    default: col.COLUMN_DEFAULT
+                };
+
+                // 1. Check ENUM / SET first so CHARACTER_MAXIMUM_LENGTH doesn't hijack it
+                if (type === 'ENUM' || type === 'SET') {
+                    const match = col.COLUMN_TYPE.match(/\((.*)\)/);
+                    if (match) {
+                        // Splits by comma and strips out the wrapping quotes to form a clean array
+                        schemaMap[col.COLUMN_NAME].value = match[1].split(',').map(v => v.trim().replace(/^'(.*)'$/, '$1'));
+                    } else {
+                        schemaMap[col.COLUMN_NAME].value = [];
+                    }
+                }
+                // 2. Fall back to standard lengths and dimensions
+                else if (col.CHARACTER_MAXIMUM_LENGTH !== null) {
                     schemaMap[col.COLUMN_NAME].value = col.CHARACTER_MAXIMUM_LENGTH;
                 }
                 else if (col.NUMERIC_PRECISION !== null && col.NUMERIC_SCALE !== null && col.NUMERIC_SCALE > 0) {
@@ -601,22 +618,16 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
                 else if (col.NUMERIC_PRECISION !== null && ['INT', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT'].includes(type)) {
                     schemaMap[col.COLUMN_NAME].value = col.NUMERIC_PRECISION;
                 }
-                else if (type === 'ENUM' || type === 'SET') {
-                    const cleanStr = col.COLUMN_TYPE.substring(type.length + 1, col.COLUMN_TYPE.length - 1);
-                    schemaMap[col.COLUMN_NAME].value = cleanStr.split(',').map(v => v.replace(/'/g, ''));
-                }
             }
 
-            return schemaMap; // 🏁 Success! Return the map and exit the function.
+            return schemaMap;
 
         } catch (error) {
             console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed parsing schema layout for ${tableName}: ${error.message}`);
 
             if (attempt < maxRetries) {
-                // Wait for 1 second before attempting a reconnection retry
                 await new Promise(resolve => setTimeout(resolve, 1000));
             } else {
-                // All 3 tries failed completely
                 console.error(`❌ All ${maxRetries} attempts failed parsing schema layout:`, error.message);
                 return null;
             }
