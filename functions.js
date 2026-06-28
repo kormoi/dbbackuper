@@ -929,7 +929,7 @@ function isJsonEqual(value1, value2) {
     // Recursively check every key and value pair
     for (const key of keys1) {
       // Check if the key exists in both targets
-      if (!Object.prototype.hasOwnProperty.call(value2, key)) {
+      if (!Object.hasOwn(value2, key)) {
         return false;
       }
 
@@ -955,7 +955,7 @@ function mergeObject(obj, updates) {
   const isPlainJson = (val) => val !== null && typeof val === 'object' && Object.prototype.toString.call(val) === '[object Object]';
 
   for (let key in updates) {
-    if (updates.hasOwnProperty(key)) {
+    if (Object.hasOwn(updates, key)) {
       const targetValue = obj[key];
       const newValue = updates[key];
 

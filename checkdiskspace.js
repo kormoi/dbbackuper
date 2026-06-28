@@ -16,7 +16,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
             throw new Error("Having problem getting DATABASE names");
         }
         let alldb = [];
-        if (Array.isArray(databaseNames)) {
+        if (Array.isArray(databaseNames) && databaseNames.length > 0) {
             let invaliddbcount = 0;
             for (const db of databaseNames) {
                 if (!alldbnames.includes(db)) {
@@ -33,7 +33,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
             if (invaliddbcount > 0) {
                 throw new Error(cstyler.bold.red("Valid DATABASE name required"));
             }
-        } else if (databaseNames === null) {
+        } else if (databaseNames === null || databaseNames.length === 0) {
             for (const db of alldbnames) {
                 if (!defaultdb.includes(db)) {
                     alldb.push(db);
@@ -82,7 +82,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
                 }
             }
             const allfilesizes = await filefunction.getCustomFileSizesSumInMB([approot], excludeFiles);
-            if (diskspace.freeMB > ((databaseSize * 1.5) + (allfilesizes.totalSum * 2))) {
+            if (diskspace.freeMB > ((databaseSize * 3) + (allfilesizes.totalSum * 3))) {
                 console.log(cstyler.bold.underline.green("We have enough space to run backup system. We are good to go."));
                 return { success: true, message: "We have enough space to run backup system. We are good to go." };
             } else {
@@ -90,7 +90,7 @@ async function checkDiskSpace(config, databaseNames = null, fullbackup = true) {
                 return { success: false, message: "No enough memory in disk space to run the backup. Please upgrade your disk space." }
             }
         } else {
-            if (diskspace.freeMB > (databaseSize * 1.5)) {
+            if (diskspace.freeMB > (databaseSize * 3)) {
                 console.log(cstyler.underline.green("We have enough disk space for database data files."));
                 return { success: true, message: "We have enough disk space for database data files." };
             } else {

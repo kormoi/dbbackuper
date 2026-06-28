@@ -47,7 +47,7 @@ async function checkfile(filePath) {
     }
     const jsondata = await filefunctions.readJsonFile(jsonfilepath);
     if (jsondata === null) return null;
-    if (!jsondata.hasOwnProperty("data") || !jsondata.hasOwnProperty("row")) {
+    if (!Object.hasOwn(jsondata, "data") || !Object.hasOwn(jsondata, "row")) {
       console.error("Provided file do not have required data");
       return null;
     }

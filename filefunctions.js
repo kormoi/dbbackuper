@@ -1,5 +1,4 @@
 const fncs = require('./functions');
-const AdmZip = require("adm-zip");
 const { count } = require('console');
 const cstyler = require('cstyler');
 const path = require('path');
@@ -7,9 +6,8 @@ const fs = require('fs').promises;
 const v8 = require('v8');
 const os = require('os');
 const fsRaw = require('fs');
-const { Readable, Transform, pipeline } = require('stream');
-const { promisify } = require('util');
-const streamPipeline = promisify(pipeline);
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises'); // Already a promise!
 
 
 
@@ -245,12 +243,12 @@ async function getNextFileName(filepath) {
     let maxCount = 0;
     let folderPath = path.resolve(filepath);
     const ifFolder = await isFolderPath(folderPath);
-    if(ifFolder === null){
+    if (ifFolder === null) {
         const mkdir = makeDirectory(folderPath);
-        if(mkdir === null){
+        if (mkdir === null) {
             return null;
         }
-    } else if (ifFolder === false){
+    } else if (ifFolder === false) {
         folderPath = path.dirname(folderPath);
     }
     const result = await getFolderTree(folderPath);
@@ -353,38 +351,75 @@ async function writeJsonFile(filePath, data) {
         }
     }
 }
-// Adm Zip
-function zipFile(sourcePath, outPath) {
+async function zipFile(sourcePath, outPath) {
     try {
-        const zip = new AdmZip();
+        // 1. Dynamically import the archiver ESM module
+        const archiverModule = await import('archiver');
+        
+        // 2. Destructure the ZipArchive class directly from the module namespace
+        const { ZipArchive } = archiverModule;
 
-        // Check if source is a folder or a single file
-        zip.addLocalFolderPromise ? zip.addLocalFile(sourcePath) : zip.addLocalFolder(sourcePath);
+        if (!ZipArchive) {
+            throw new Error("Could not find ZipArchive in the archiver module exports.");
+        }
 
-        // If it's just a single file, we use addLocalFile
-        // For simplicity, this hero function handles both:
-        zip.addLocalFile(sourcePath);
+        // 3. Establish the direct disk write stream using fsRaw
+        const outputStream = fsRaw.createWriteStream(outPath);
+        
+        // 4. Instantiate the specialized Zip engine directly
+        const archive = new ZipArchive({ zlib: { level: 9 } });
 
-        zip.writeZip(outPath);
+        // 5. Inspect if the target source path is a file or directory
+        const stats = fsRaw.statSync(sourcePath);
+        if (stats.isDirectory()) {
+            archive.directory(sourcePath, false);
+        } else {
+            const fileName = path.basename(sourcePath);
+            archive.file(sourcePath, { name: fileName });
+        }
+
+        // 6. Trigger the finalization background pipeline
+        const archivePromise = archive.finalize();
+
+        // 7. Stream chunks straight to the file system using pipeline
+        await pipeline(archive, outputStream);
+        await archivePromise;
+
         console.log(`Successfully zipped: ${outPath}`);
         return true;
+
     } catch (e) {
         console.error(`Zip Error: ${e.message}`);
         return null;
     }
 }
-function unzipFile(zipPath, targetDir) {
+async function unzipFile(zipFilePath, destinationFolderPath) {
     try {
-        const zip = new AdmZip(zipPath);
+        // 1. Dynamically import unzipper to completely avoid any ESM require errors
+        const unzipperModule = await import('unzipper');
+        const unzipper = unzipperModule.default || unzipperModule;
 
-        // extractAllTo(targetPath, overwrite)
-        zip.extractAllTo(targetDir, true);
+        const srcPath = path.resolve(zipFilePath);
+        const destFolder = path.resolve(destinationFolderPath);
 
-        console.log(`Successfully extracted zip file`);
+        // 2. Ensure target folder directory exists
+        await fs.mkdir(destFolder, { recursive: true });
+
+        // 3. Establish low-overhead disk read stream (using fsRaw)
+        const readStream = fsRaw.createReadStream(srcPath);
+
+        // 4. Configure the extraction streaming engine
+        const extractor = unzipper.Extract({ path: destFolder });
+
+        // 5. Use the clean native pipeline directly with await
+        await pipeline(readStream, extractor);
+
+        console.log(`Successfully extracted archive to: ${destinationFolderPath}`);
         return true;
-    } catch (e) {
-        console.error(`Unzip Error: ${e.message}`);
-        return false;
+
+    } catch (error) {
+        console.error(`Unzip Error: ${error.message}`);
+        return null;
     }
 }
 async function compressbackupfile(path, data) {
@@ -529,6 +564,31 @@ async function deletePath(targetPath) {
         }
     }
 }
+async function copyFileToFolder(sourceFilePath, destinationFolderPath) {
+    try {
+        // 1. Resolve absolute paths to keep pathing consistent
+        const srcPath = path.resolve(sourceFilePath);
+        const destFolder = path.resolve(destinationFolderPath);
+
+        // 2. Extract the file name from the source path to build the new full path
+        const fileName = path.basename(srcPath);
+        const destFilePath = path.join(destFolder, fileName);
+
+        // 3. Ensure the target directory exists (creates it recursively if missing)
+        await fs.mkdir(destFolder, { recursive: true });
+
+        // 4. Perform the copy operation
+        // Using COPYFILE_EXCL is an optional flag that prevents overwriting an existing file
+        await fs.copyFile(srcPath, destFilePath);
+
+        console.log(`[${cstyler.green("Success")}] ${cstyler.yellow("Copied")} "${cstyler.blue(fileName)}" to ${cstyler.green(destinationFolderPath)}`);
+        return { success: true, destinationPath: destFilePath };
+
+    } catch (error) {
+        console.error(`[Copy Error]:`, error.message);
+        return { success: false, message: error.message };
+    }
+}
 async function getCustomFileSizesSumInMB(pathsToCalculate, excludeList = []) {
     try {
         if (!Array.isArray(pathsToCalculate)) {
@@ -620,7 +680,7 @@ async function saveBufferToFile(buffer, folderPath, fileNameWithoutExt) {
     try {
         await fs.promises.mkdir(folderPath, { recursive: true });
         return new Promise((resolve) => {
-            const stream = fs.createWriteStream(fullPath);
+            const stream = fsRaw.createWriteStream(fullPath);
             stream.on('error', (err) => resolve({ success: false, error: err.message }));
             stream.on('finish', () => resolve({ success: true, path: fullPath, extension: ext }));
             stream.end(buffer);
@@ -734,10 +794,10 @@ async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
                     targetEncoding = 'hex';
                     isOriginallyHex = true;
                 } else if (/^[A-Za-z0-9+/]*={0,2}$/.test(cleaningData.slice(0, 100))) {
-                    targetEncoding = cleaningData.length > 64 ? 'base64' : 'utf8';
+                    // FIXED: Executing the ternary condition cleanly without string wrappers
+                    targetEncoding = cleaningData.length > 64 ? "base64" : "utf8";
                 }
 
-                // If it's regular prose text, set default extension to 'txt'
                 if (targetEncoding === 'utf8') {
                     detectedExt = 'txt';
                 }
@@ -766,11 +826,11 @@ async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
             tmpPath = path.join(folderPath, `${fileNameWithoutExt}.tmp`);
             const writeStream = fsRaw.createWriteStream(tmpPath);
 
-            // 4. Pipe everything safely
+            // 4. Pipe everything safely using native promise pipeline
             if (decoderStream) {
-                await streamPipeline(sourceStream, decoderStream, snifferStream, writeStream);
+                await pipeline(sourceStream, decoderStream, snifferStream, writeStream);
             } else {
-                await streamPipeline(sourceStream, snifferStream, writeStream);
+                await pipeline(sourceStream, snifferStream, writeStream);
             }
 
             // 5. Finalize file name with the newly verified extension
@@ -824,6 +884,28 @@ async function fileToBase64(filePath) {
         return null;
     }
 }
+async function fileToBuffer(targetFilePath) {
+    try {
+        // 1. Resolve to an absolute path to avoid relative directory issues
+        const absolutePath = path.resolve(targetFilePath);
+
+        // 2. Verify the file actually exists before trying to read it
+        try {
+            await fs.access(absolutePath);
+        } catch {
+            throw new Error(`File not found at path: ${absolutePath}`);
+        }
+
+        // 3. Read the file into a raw binary buffer (No encoding specified = raw bytes)
+        const fileBuffer = await fs.readFile(absolutePath);
+
+        return fileBuffer;
+
+    } catch (error) {
+        console.error(`[fileToBuffer Error]:`, error.message);
+        return null;
+    }
+}
 // lets get file name on the folder that were set as count
 async function getUniqueFilePath(folderPath, fileName, ext) {
     let fullPath = path.join(folderPath, `${fileName}.${ext}`);
@@ -848,6 +930,7 @@ module.exports = {
     readFileSafely,
     readJsonFile,
     writeJsonFile,
+    zipFile,
     unzipFile,
     compressbackupfile,
     isFolderPath,
@@ -857,9 +940,11 @@ module.exports = {
     clearFolderContents,
     deleteSingleFile,
     deletePath,
+    copyFileToFolder,
     getCustomFileSizesSumInMB,
     saveBufferToFile,
     saveDataToFile,
     fileToBase64,
-    getUniqueFilePath
+    fileToBuffer,
+    getUniqueFilePath,
 }

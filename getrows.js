@@ -110,9 +110,9 @@ async function totalRowCount(config, database, table) {
 }
 function toReadable(value) {
     // Lets check if previously processed or not
-    if (fncs.isJsonObject(value) && value.hasOwnProperty("type") && value.hasOwnProperty("ischanged") && value.hasOwnProperty("value")) {
+    if (fncs.isJsonObject(value) && Object.hasOwn(value, "type") && Object.hasOwn(value, "ischanged") && Object.hasOwn(value, "value")) {
         return value;
-    } else if(fncs.isJsonObject(value) && value.hasOwnProperty("isSaved") && value.hasOwnProperty("fileName") && value.hasOwnProperty("extention") && value.hasOwnProperty("filepath") && value.hasOwnProperty("type")){
+    } else if(fncs.isJsonObject(value) && Object.hasOwn(value, "isSaved") && Object.hasOwn(value, "fileName") && Object.hasOwn(value, "extention") && Object.hasOwn(value, "filepath") && Object.hasOwn(value, "type")){
         return value;
     }
     // 1. ADVANCED SPATIAL & GEOMETRY LAYER (MySQL / PG Support)
@@ -163,7 +163,7 @@ function toReadable(value) {
 
     // 6. PG JSON/JSONB or Array Columns (Executed after Dates & Buffers are safely isolated)
     if (fncs.isJsonObject(value) || fncs.isJsonString(value)) {
-        if (value.hasOwnProperty("ischanged") || value.hasOwnProperty("isSaved")) {
+        if (Object.hasOwn(value, "ischanged") || Object.hasOwn(value, "isSaved")) {
             return value;
         }
         return { ischanged: true, value: fncs.stringifyAny(value), type: 'json' };
@@ -462,7 +462,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                         const columntype = item.type.toUpperCase();
                         const columnName = item.column;
                         const columnData = await getColumnValueByOffset(config, databaseName, tableName, offset, columnName);
-                        if (columnData.hasOwnProperty("value")) {
+                        if (Object.hasOwn(columnData, "value")) {
                             // Lets check if data is savable or not
                             if (columnData.value === null) {
                                 rowdata[columnName] = null;
@@ -477,7 +477,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                                         // do nothing keep the file on readable data
                                         // Because if it is bigger than 1 MB then
                                         // in the next block it will be processed
-                                    } else if (savefile.hasOwnProperty("isSaved") && savefile.isSaved === true) {
+                                    } else if (Object.hasOwn(savefile, "isSaved") && savefile.isSaved === true) {
                                         rowdata[columnName] = savefile;
                                         continue;
                                     } else {
@@ -487,7 +487,7 @@ async function getSingleRowUntilMemoryLimit(config, databaseName, tableName, off
                             }
                             if (sizeinMB > 1 && (!fncs.isJsonObject(readableData) || readableData.isSaved !== true)) {
                                 let saveDataSingle = null;
-                                if (fncs.isJsonObject(readableData) && readableData.hasOwnProperty("value")) {
+                                if (fncs.isJsonObject(readableData) && Object.hasOwn(readableData, "value")) {
                                     saveDataSingle = readableData.value;
                                     // if not saved it will not have any saving informaiton
                                 } else {
@@ -817,7 +817,7 @@ async function writeDataToFileBig(data) {
                         let colValue = rowData[col];
                         rowData[col] = null; // Clear original value to free memory
                         // if no need to make it readable then we will not make all row readable it takes up a lot of memory
-                        if (colValue.hasOwnProperty("isBinaryColumn") && colValue.isBinaryColumn === true) {
+                        if (Object.hasOwn(colValue, "isBinaryColumn") && colValue.isBinaryColumn === true) {
                             if (['base64', 'hex', 'buffer'].includes(colValue.type)) {
                                 const savethefile = await subSaveFile(colValue.value);
                                 // if saved returns { isSaved: true, filepath: filepath + savefile.fileName, type: 'file' };
@@ -832,7 +832,7 @@ async function writeDataToFileBig(data) {
                                     } else {
                                         rowData[col] = colValue;
                                     }
-                                } else if (savethefile.hasOwnProperty("isSaved") && savethefile.isSaved === true) {
+                                } else if (Object.hasOwn(savethefile, "isSaved") && savethefile.isSaved === true) {
                                     rowData[col] = savethefile;
                                 } else {
                                     rowData[col] = savethefile; // Replace the value with original data if saving failed but we got readable data back
@@ -1089,13 +1089,13 @@ async function getallrows(config, jsondata, forceDownload = false) {
             }
         }
         for (const db of Object.keys(jsondata)) {
-            if (!data.hasOwnProperty(db)) data[db] = {};
+            if (!Object.hasOwn(data, db)) data[db] = {};
             for (const table of Object.keys(jsondata[db])) {
                 if (!fncs.isJsonObject(jsondata[db][table])) {
                     continue;
                 }
                 console.log(`Working on ${cstyler.purple('Database:')} ${cstyler.blue(db)} ${cstyler.purple('Table:')} ${cstyler.blue(table)}`);
-                if (!data[db].hasOwnProperty(table)) data[db][table] = []; // Initialize as empty array to store rows
+                if (!Object.hasOwn(data[db], table)) data[db][table] = []; // Initialize as empty array to store rows
                 // Lets check if table have any row or not
                 const rowCount = await totalRowCount(config, db, table);
                 if (rowCount === null) {

@@ -3,6 +3,7 @@ const cstyler = require("cstyler");
 const getmtd = require("./getmetadata");
 const fncs = require("./functions");
 const links = require("./links");
+const ff = require("./filefunctions");
 const wkx = require('wkx'); // Required for rebuilding MySQL spatial buffers
 
 
@@ -13,21 +14,24 @@ function toOriginal(value) {
         return value;
     }
     // Lets check if previously processed or not
-    if (!fncs.isJsonObject(value) || (!value.hasOwnProperty("type") && !value.hasOwnProperty("ischanged") && !value.hasOwnProperty("value"))) {
+    if (!fncs.isJsonObject(value) || (!Object.hasOwn(value, "type") && !Object.hasOwn(value, "ischanged") && !Object.hasOwn(value, "value"))) {
         return value;
     }
-    if (fncs.isJsonObject(value) && value.hasOwnProperty("isSaved") && value.hasOwnProperty("fileName") && value.hasOwnProperty("extention") && value.hasOwnProperty("filepath") && value.hasOwnProperty("type")) {
+    if (fncs.isJsonObject(value) && Object.hasOwn(value, "isSaved") && Object.hasOwn(value, "fileName") && Object.hasOwn(value, "extention") && Object.hasOwn(value, "filepath") && Object.hasOwn(value, "type")) {
         return value;
     }
     if (value.ischanged === false) {
         return value.value;
     }
-
+    if (Buffer.isBuffer(value)) {
+        // 2. Return its converted value (e.g., 'utf8', 'hex', or 'base64')
+        return value;
+    }
     // --- HANDLE OBJECT METADATA ENVELOPS ---
     if (typeof value === 'object' && !Array.isArray(value)) {
 
         // Safety pass-through for files that were flagged as already saved
-        if (value.hasOwnProperty("isSaved") && value.hasOwnProperty("fileName")) {
+        if (Object.hasOwn(value, "isSaved") && Object.hasOwn(value, "fileName")) {
             return value;
         }
 
@@ -395,14 +399,21 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
             if (SPATIAL_TYPES.includes(dataType) && value !== undefined && value !== null) {
                 isSpatial = true;
 
-                if (typeof value === 'object' && !Array.isArray(value) && value.hasOwnProperty('value')) {
+                if (typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) {
                     value = value.value;
                 }
 
-                if (Array.isArray(value)) {
-                    // Fire the recursive structural scanner
+                // 1. Intercept Standalone Coordinate Objects (e.g., { x: 0, y: 0 })
+                if (value && typeof value === 'object' && !Array.isArray(value) && 'x' in value && 'y' in value) {
+                    const cleanType = (dataType === "GEOMETRY" || dataType === "GEOMCOLLECTION" || dataType === "GEOMETRYCOLLECTION") ? "POINT" : dataType;
+                    rawWktBody = `${cleanType}(${value.x} ${value.y})`;
+                }
+                // 2. Fire recursive structural tracker for coordinate arrays
+                else if (Array.isArray(value)) {
                     rawWktBody = parseArrayToWkt(value, dataType);
-                } else if (typeof value === 'string') {
+                }
+                // 3. Fallback for raw string configurations
+                else if (typeof value === 'string') {
                     let trimmed = value.trim();
                     if (/^ST_GeomFromText\(/i.test(trimmed)) {
                         trimmed = trimmed.replace(/^ST_GeomFromText\(/i, '').replace(/\)$/, '').trim();
@@ -410,7 +421,7 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                     rawWktBody = trimmed.replace(/^['"](.*)['"]$/, "$1").trim();
                 }
 
-                // Clean out redundant wrapping if the recursive checker already appended the keyword
+                // Clean out redundant wrapping if the generators already appended the keyword
                 if (/^(POINT|LINESTRING|POLYGON|MULTIPOINT|MULTILINESTRING|MULTIPOLYGON|GEOMETRYCOLLECTION)/i.test(rawWktBody)) {
                     fullWrappedExpression = `ST_GeomFromText('${rawWktBody}')`;
                 } else {
@@ -490,6 +501,7 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
 async function addRecord(config, databaseName, tableName, validatedData) {
     let pool;
     try {
+        console.log("Validated data: ", validatedData)
         pool = await mysql.createConnection({
             ...config,
             database: databaseName
@@ -508,12 +520,12 @@ async function addRecord(config, databaseName, tableName, validatedData) {
 
             if (value === "CURRENT_TIMESTAMP") {
                 placeholders.push("CURRENT_TIMESTAMP");
-            } 
+            }
             // Handle pre-wrapped geometry helper strings securely via binding parameters
             else if (typeof value === 'string' && /^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i.test(value.trim())) {
                 const match = value.trim().match(/^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i);
                 const rawWktBody = match[1]; // Extract just the raw coordinates: e.g. "POINT(0 0)"
-                
+
                 placeholders.push("ST_GeomFromText(?)");
                 queryValues.push(rawWktBody); // Pass safely as an isolated data binding variable
             }
@@ -525,7 +537,7 @@ async function addRecord(config, databaseName, tableName, validatedData) {
 
         // Build and execute the SQL string
         const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders.join(', ')})`;
-        
+
         // This is now fully safe, optimized, and prepared-statement friendly!
         const [result] = await pool.execute(query, queryValues);
 
@@ -538,7 +550,98 @@ async function addRecord(config, databaseName, tableName, validatedData) {
         if (pool) await pool.end();
     }
 }
+async function uploadData(config, databaseName, tableName, data, schemaLayout = null) {
+    try {
+        if (schemaLayout === null) {
+            const tableMetadata = await getmtd.getTableSchemaLayout(config, databaseName, tableName);
+            if (tableMetadata === null) {
+                throw new Error("Having problem getting table schema layout.");
+            } else if (tableMetadata === false) {
+                console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)}`);
+                return false;
+            }
+            schemaLayout = tableMetadata;
+        }
+        for (const col of Object.keys(data)) {
+            const colData = data[col];
+            if (fncs.isJsonObject(colData) && Object.hasOwn(colData, "isSaved") && colData.isSaved === true && Object.hasOwn(colData,"fileName") && Object.hasOwn(colData,"extention") && Object.hasOwn(colData,"filepath") && Object.hasOwn(colData,"fullpath")) {
+                const filePath = colData.filepath;
+                const getBuffer = await ff.fileToBuffer(filePath);
+                if (getBuffer === null) {
+                    throw new Error("Having some issue with files. Can not find required files.");
+                }
+                data[col] = getBuffer;
+            } else {
+                //{ isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file', fullpath: savefile.path }
+                data[col] = toOriginal(data[col]);
+            }
+        }
+        // Lets validate data
+        const validatedData = validatePayloadWithSchema(schemaLayout, data);
+        if (validatedData === null) {
+            throw new Error("Unable to validate data.");
+        }
+        // Lets add record to the table
+        const addrec = await addRecord(config, databaseName, tableName, validatedData);
+        if (addrec === null) {
+            throw new Error("The server is cousing error.");
+        }
+        console.log(addrec)
+        return addrec;
+    } catch (err) {
+        console.error(`Having problem uploading data to the server ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - Error message: ${err.message}`);
+        return null;
+    }
+}
+async function uploadMultiRow(config, databaseName, tableName, data) {
+    let count = 0;
+    let addedData = [];
+    try {
+        const schemaLayout = await getmtd.getTableSchemaLayout(config, databaseName, tableName);
+        if (schemaLayout === null) {
+            throw new Error("Having problem getting table schema layout.");
+        } else if (schemaLayout === false) {
+            console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.purple(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.purple(tableName)}`);
+            return false;
+        }
+        if (!Array.isArray(data)) {
+            throw new Error("Valid array data required.");
+        }
+        while (data.length > 0) {
+            const item = data.pop();
+            const upload = await uploadData(config, databaseName, tableName, item, schemaLayout);
+            if (upload === null) {
+                throw new Error("Unable to upload data to database");
+            }
+            count++;
+        }
+        return { success: true, count: count }
+    } catch (err) {
+        console.error(`Having problem adding record multiple row on ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - Error message: ${err.message}`);
+        return { success: null, data: data, count: count }
+    }
+}
+async function clearAllRows(config, databaseName, tableName) {
+    let pool;
+    try {
+        pool = await mysql.createConnection({
+            ...config,
+            database: databaseName
+        });
 
+        // TRUNCATE drops all data and instantly resets auto-increment indexes back to 1
+        const query = `TRUNCATE TABLE \`${tableName}\``;
+        await pool.execute(query);
+
+        return { success: true, message: `All records cleared and layout reset for ${tableName}.` };
+
+    } catch (error) {
+        console.error(`Error dropping rows in ${tableName}:`, error.message);
+        return { success: false, error: error.message };
+    } finally {
+        if (pool) await pool.end();
+    }
+}
 
 
 module.exports = {
@@ -546,4 +649,7 @@ module.exports = {
     validateDefault,
     validatePayloadWithSchema,
     addRecord,
+    uploadData,
+    uploadMultiRow,
+    clearAllRows,
 }
