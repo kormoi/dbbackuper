@@ -792,7 +792,7 @@ async function subSaveFile(data, filePath = null) {
         if (savefile === null) {
             return null;
         } else if (savefile.success === true) {
-            returndata = { isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file', fullpath: savefile.path };
+            returndata = { isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file'};
         } else {
             returndata = data;
         }
@@ -937,7 +937,7 @@ async function makeDataReadable(config, data) {
                                 // 💡 FIX 4: Scan the partially mutated row data safely for active file descriptors
                                 for (const item of Object.keys(rowData)) {
                                     if (rowData[item] && typeof rowData[item] === 'object' && Object.hasOwn(rowData[item], "isSaved") && rowData[item].isSaved === true) {
-                                        await ff.deletePath(path.resolve(rowData[item].fullpath));
+                                        await ff.deletePath(path.resolve(rowData[item].filepath));
                                     }
                                 }
 

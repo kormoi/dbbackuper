@@ -293,22 +293,35 @@ async function readFileSafely(filePath, asArray = false) {
     }
 }
 async function readJsonFile(filePath) {
-    try {
-        // Check if the file has a .json extension
-        if (path.extname(filePath).toLowerCase() !== ".json") {
-            throw new Error(`The file at ${filePath} is not a JSON file.`);
+    const maxRetries = 3;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // Check if the file has a .json extension
+            if (path.extname(filePath).toLowerCase() !== ".json") {
+                throw new Error(`The file at ${filePath} is not a JSON file.`);
+            }
+
+            // Read the file as a string
+            const fileContent = await fs.readFile(filePath, "utf-8");
+
+            // Parse the JSON string into an object
+            const jsonData = JSON.parse(fileContent);
+            return jsonData;
+
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed reading JSON file at ${filePath}: ${error.message}`);
+
+            // If it's a structural error (e.g., not a JSON extension or invalid JSON syntax), 
+            // retrying won't change the outcome, but we still respect the 3-try loop for disk safety.
+            if (attempt < maxRetries) {
+                // Cool down 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed reading or parsing JSON file at ${filePath}:`, error);
+                return null;
+            }
         }
-
-        // Read the file as a string
-        const fileContent = await fs.readFile(filePath, "utf-8");
-
-        // Parse the JSON string into an object
-        const jsonData = JSON.parse(fileContent);
-        return jsonData;
-    } catch (error) {
-        // Handle errors (e.g., file not found, invalid JSON)
-        console.error(`Error reading or parsing JSON file at ${filePath}:`, error);
-        return null;
     }
 }
 async function writeJsonFile(filePath, data) {
@@ -352,74 +365,114 @@ async function writeJsonFile(filePath, data) {
     }
 }
 async function zipFile(sourcePath, outPath) {
-    try {
-        // 1. Dynamically import the archiver ESM module
-        const archiverModule = await import('archiver');
-        
-        // 2. Destructure the ZipArchive class directly from the module namespace
-        const { ZipArchive } = archiverModule;
+    const maxRetries = 3;
 
-        if (!ZipArchive) {
-            throw new Error("Could not find ZipArchive in the archiver module exports.");
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            // 1. Dynamically import the archiver ESM module
+            const archiverModule = await import('archiver');
+
+            // 2. Safely grab ZipArchive directly from the module namespace
+            const ZipArchive = archiverModule.ZipArchive || archiverModule.default?.ZipArchive;
+
+            if (!ZipArchive) {
+                throw new Error("Could not find the ZipArchive constructor in the archiver module.");
+            }
+
+            // 3. Establish the direct disk write stream using fsRaw
+            const outputStream = fsRaw.createWriteStream(outPath);
+
+            // 4. Instantiate the specialized Zip stream engine directly
+            const archive = new ZipArchive({ zlib: { level: 9 } });
+
+            // 5. Inspect if the target source path is a file or directory
+            const stats = fsRaw.statSync(sourcePath);
+            if (stats.isDirectory()) {
+                archive.directory(sourcePath, false);
+            } else {
+                const fileName = path.basename(sourcePath);
+                archive.file(sourcePath, { name: fileName });
+            }
+
+            // 6. Trigger finalization background processing pipeline
+            const archivePromise = archive.finalize();
+
+            // 7. Stream chunks straight to the file system using pipeline
+            await pipeline(archive, outputStream);
+            await archivePromise;
+
+            console.log(`Successfully zipped: ${outPath}`);
+            return true;
+
+        } catch (e) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed compressing archive: ${e.message}`);
+
+            // Clean up incomplete or broken zip file targets on failure
+            try {
+                if (fsRaw.existsSync(outPath)) {
+                    await fs.promises.unlink(outPath);
+                }
+            } catch (_) { }
+
+            if (attempt < maxRetries) {
+                // Cool down 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed creating zip file:`, e.message);
+                return null;
+            }
         }
-
-        // 3. Establish the direct disk write stream using fsRaw
-        const outputStream = fsRaw.createWriteStream(outPath);
-        
-        // 4. Instantiate the specialized Zip engine directly
-        const archive = new ZipArchive({ zlib: { level: 9 } });
-
-        // 5. Inspect if the target source path is a file or directory
-        const stats = fsRaw.statSync(sourcePath);
-        if (stats.isDirectory()) {
-            archive.directory(sourcePath, false);
-        } else {
-            const fileName = path.basename(sourcePath);
-            archive.file(sourcePath, { name: fileName });
-        }
-
-        // 6. Trigger the finalization background pipeline
-        const archivePromise = archive.finalize();
-
-        // 7. Stream chunks straight to the file system using pipeline
-        await pipeline(archive, outputStream);
-        await archivePromise;
-
-        console.log(`Successfully zipped: ${outPath}`);
-        return true;
-
-    } catch (e) {
-        console.error(`Zip Error: ${e.message}`);
-        return null;
     }
 }
 async function unzipFile(zipFilePath, destinationFolderPath) {
-    try {
-        // 1. Dynamically import unzipper to completely avoid any ESM require errors
-        const unzipperModule = await import('unzipper');
-        const unzipper = unzipperModule.default || unzipperModule;
+    const maxRetries = 3;
 
-        const srcPath = path.resolve(zipFilePath);
-        const destFolder = path.resolve(destinationFolderPath);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(1);
+            const unzipperModule = await import('unzipper');
+            console.log(2);
+            const unzipper = unzipperModule.default || unzipperModule;
+            console.log(3);
 
-        // 2. Ensure target folder directory exists
-        await fs.mkdir(destFolder, { recursive: true });
+            const srcPath = path.resolve(zipFilePath);
+            const destFolder = path.resolve(destinationFolderPath);
 
-        // 3. Establish low-overhead disk read stream (using fsRaw)
-        const readStream = fsRaw.createReadStream(srcPath);
+            console.log(4);
+            // Ensure target folder directory exists
+            await fs.mkdir(destFolder, { recursive: true });
+            console.log(5);
 
-        // 4. Configure the extraction streaming engine
-        const extractor = unzipper.Extract({ path: destFolder });
+            console.log(6);
+            // FIXED: Open the zip file directly using unzipper's robust promise layer
+            const directory = await unzipper.Open.file(srcPath);
+            console.log(7);
 
-        // 5. Use the clean native pipeline directly with await
-        await pipeline(readStream, extractor);
+            console.log(8);
+            // Extract everything cleanly using the engine's native promise tracker
+            await directory.extract({ path: destFolder });
+            console.log(9); // This will now fire perfectly!
 
-        console.log(`Successfully extracted archive to: ${destinationFolderPath}`);
-        return true;
+            console.log(`Successfully extracted archive to: ${destinationFolderPath}`);
+            return true;
 
-    } catch (error) {
-        console.error(`Unzip Error: ${error.message}`);
-        return null;
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed extracting archive: ${error.message}`);
+
+            // Clean up the partially extracted destination folder on failure to avoid corruption
+            try {
+                const destFolder = path.resolve(destinationFolderPath);
+                await fs.rm(destFolder, { recursive: true, force: true });
+            } catch (_) { }
+
+            if (attempt < maxRetries) {
+                // Cool down 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed extracting file:`, error.message);
+                return null;
+            }
+        }
     }
 }
 async function compressbackupfile(path, data) {
@@ -471,26 +524,30 @@ async function makeDirectory(dirPath) {
     }
 }
 async function isfilepathwithext(filePath, ext = ".zip") {
-    // 1. Check extension first (fast)
-    let exten;
     if (typeof ext !== "string") return null;
-    if (!ext.startsWith(".")) {
-        exten = "." + ext;
-    }
-    const isZipExt = path.extname(filePath).toLowerCase() === exten;
-    if (!isZipExt) return false;
+
+    // FIXED: Ensure the extension string always has exactly one leading dot
+    const exten = ext.startsWith(".") ? ext.toLowerCase() : "." + ext.toLowerCase();
+
+    // 1. Check extension first (fast)
+    const matchesExt = path.extname(filePath).toLowerCase() === exten;
+    if (!matchesExt) return false;
 
     try {
         // 2. Check if it actually exists and is a file (not a folder named "test.zip")
         const stats = await fs.stat(filePath);
         return stats.isFile();
     } catch (err) {
-        // If file doesn't exist, we return null
+        // If file doesn't exist, return null
         return null;
     }
 }
+/**
+ * checks if it is a file path or not and also if file or not
+ */
 async function isfilepath(filePath) {
     try {
+        filePath = path.resolve(filePath);
         const stats = await fs.stat(filePath);
         // Returns true only if it is a file (not a folder)
         return stats.isFile();
@@ -723,7 +780,6 @@ function createStringDecoderStream(encoding) {
         }
     });
 }
-
 function createSignatureSnifferStream(SIGNATURES, onExtensionFound) {
     let headerBuffer = Buffer.alloc(0);
     let matched = false;

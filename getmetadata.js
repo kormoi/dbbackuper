@@ -10,6 +10,9 @@ const links = require("./links");
 
 const defaultdb = ['information_schema', 'mysql', 'performance_schema', 'sys', 'world'];
 
+/**
+ * Get mysql version and understand if mysql or not
+ */
 async function getMySQLVersion(config) {
     const connection = await mysql.createConnection(config);
     try {
@@ -24,6 +27,9 @@ async function getMySQLVersion(config) {
         await connection.end();
     }
 }
+/**
+ * Check if mysql version is 5.7.8 or above
+ */
 async function isMySQL578OrAbove(config) {
     const versionStr = await getMySQLVersion(config); // e.g., '5.7.9-log' or '8.0.34'
     // Extract numeric version
@@ -38,6 +44,9 @@ async function isMySQL578OrAbove(config) {
     // major==5, minor==7
     return patch >= 8;
 }
+/**
+ * check disk space used, free and total
+ */
 async function getDiskMetricsInMB(pathToCheck) {
     try {
         // Safe path resolution for Node v20 (Defaults to execution root if empty)
@@ -65,6 +74,9 @@ async function getDiskMetricsInMB(pathToCheck) {
         return null;
     }
 }
+/**
+ * check database size in MB of given databases
+ */
 async function getDatabaseSizeInMB(config, dbName) {
     let connection = null;
     let poolContext = null;
@@ -214,8 +226,6 @@ async function getDatabaseCharsetAndCollation(config, databaseName) {
         if (connection) await connection.end();
     }
 }
-// require config and database names that you want to backup
-// keep it empty to backup all databases that are not default
 async function getmetadata(config, dbs = []) {
     try {
         // lets initialize our return object

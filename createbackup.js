@@ -2,12 +2,13 @@ const getmtd = require('./getmetadata');
 const fncs = require('./functions');
 const cstyler = require('cstyler');
 const path = require("path");
-const fs = require("fs");
 const links = require("./links.js");
-
 const checkdisk = require("./checkdiskspace.js");
 const fileFunc = require("./filefunctions.js");
 const rows = require("./getrows.js");
+
+
+
 
 
 async function copyFiles(folderTree, destinationFolder) {
@@ -37,7 +38,7 @@ async function copyFiles(folderTree, destinationFolder) {
         return null;
     }
 }
-async function createbackup(config, dbs = [], forceDownload = false, outputpath = null, fullBackup = true) {
+async function createbackup(config, outputpath = null, fullBackup = false, dbs = [], forceDownload = false) {
     try {
         console.log(cstyler.bold("Let's check disk space first to check if we can run the backup or not."));
         const cdsk = await checkdisk.checkDiskSpace(config, dbs, fullBackup);
@@ -98,14 +99,14 @@ async function createbackup(config, dbs = [], forceDownload = false, outputpath 
             } else if(isFolder === false){
                 outputpath = path.dirname(outputpath);
             }
-            const zipResult = await fileFunc.zipFile("./backupfiles/backup", path.join(outputpath, 'backup.zip'));
+            const zipResult = await fileFunc.zipFile(links.main, path.join(outputpath, 'backup.zip'));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
             }
             console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
             returnData = true;
         } else {
-            const zipResult = await fileFunc.zipFile("./backupfiles/backup", path.join(rootPath, 'backup.zip'));
+            const zipResult = await fileFunc.zipFile(links.main, path.join(rootPath, 'backup.zip'));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red.bold("Could not create zip file. Please check permissions and try again."));
             }
