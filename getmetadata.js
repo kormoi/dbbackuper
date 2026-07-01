@@ -584,7 +584,8 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
                     NUMERIC_SCALE,
                     COLUMN_TYPE,
                     IS_NULLABLE,
-                    COLUMN_DEFAULT
+                    COLUMN_DEFAULT,
+                    COLUMN_KEY
                  FROM INFORMATION_SCHEMA.COLUMNS 
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
                  ORDER BY ORDINAL_POSITION`,
@@ -601,11 +602,12 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
             for (const col of schemaInfo) {
                 const type = col.DATA_TYPE.toUpperCase();
 
-                // Establish base column details including constraints
+                // Establish base column details including constraints and Primary Key check
                 schemaMap[col.COLUMN_NAME] = {
                     type: type,
                     nullable: col.IS_NULLABLE === 'YES',
-                    default: col.COLUMN_DEFAULT
+                    default: col.COLUMN_DEFAULT,
+                    isPrimary: col.COLUMN_KEY === 'PRI' // <--- Checks if it is a Primary Key
                 };
 
                 // 1. Check ENUM / SET first so CHARACTER_MAXIMUM_LENGTH doesn't hijack it
@@ -648,23 +650,38 @@ async function getTableSchemaLayout(config, databaseName, tableName) {
         }
     }
 }
-async function getTableRowCount(config, databaseName, tableName) {
-    let connection;
-    try {
-        connection = await mysql.createConnection(config);
+async function getTableRowCount(config, database, table) {
+    const maxRetries = 3;
 
-        // Using COUNT(*) for 100% accuracy
-        // We wrap identifiers in backticks to prevent errors with reserved words
-        const [rows] = await connection.execute(
-            `SELECT COUNT(*) AS totalRows FROM \`${databaseName}\`.\`${tableName}\``
-        );
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let connection;
+        try {
+            connection = await mysql.createConnection(config);
 
-        return rows[0].totalRows;
-    } catch (err) {
-        console.error("Error fetching row count:", err.message);
-        return null;
-    } finally {
-        if (connection) await connection.end();
+            // 1. Get total rows (Variables corrected to match arguments 'database' and 'table')
+            const [countResult] = await connection.execute(
+                `SELECT COUNT(*) AS total FROM \`${database}\`.\`${table}\``
+            );
+
+            const totalRows = Number(countResult[0]?.total || 0);
+            return totalRows; // 🏁 Success! Return the count and exit.
+
+        } catch (err) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed fetching row count for ${table}: ${err.message}`);
+
+            if (attempt < maxRetries) {
+                // Wait for 1 second before attempting a clean retry connection
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                // All 3 tries failed completely
+                console.error("❌ All attempts failed fetching row count. Error message: ", err.message);
+                return null;
+            }
+        } finally {
+            if (connection) {
+                await connection.end();
+            }
+        }
     }
 }
 module.exports = {

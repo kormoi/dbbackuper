@@ -4,7 +4,7 @@ const cstyler = require('cstyler');
 const path = require("path");
 const links = require("./links.js");
 const checkdisk = require("./checkdiskspace.js");
-const fileFunc = require("./filefunctions.js");
+const ff = require("./filefunctions.js");
 const rows = require("./getrows.js");
 
 
@@ -17,7 +17,7 @@ async function copyFiles(folderTree, destinationFolder) {
             const folderContent = folderTree[item];
             if (Object.hasOwn(folderContent, "contents") && fncs.isJsonObject(folderContent.contents)) {
                 const destinationPath = path.resolve(path.join(destinationFolder, item));
-                const mkdir = await fileFunc.makeDirectory(destinationPath);
+                const mkdir = await ff.makeDirectory(destinationPath);
                 if (mkdir === null) {
                     throw new Error("Unable to create folder.");
                 }
@@ -26,7 +26,7 @@ async function copyFiles(folderTree, destinationFolder) {
                     return null;
                 }
             } else {
-                const copyFile = await fileFunc.copyFileToFolder(folderContent.path, destinationFolder);
+                const copyFile = await ff.copyFileToFolder(folderContent.path, destinationFolder);
                 if (copyFile.success === false) {
                     throw new Error(copyFile.message);
                 }
@@ -46,13 +46,13 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             throw new Error(cdsk.message);
         }
         // Lets delete folder if exist
-        const deleteMain = await fileFunc.deletePath(links.main);
+        const deleteMain = await ff.deletePath(links.main);
         if (!deleteMain) {
             throw new Error("Unable to work on file directory. Pleae check permission.");
         }
         // lets make sure we have the output directory
-        const mkd1 = await fileFunc.makeDirectory(links.programfiles);
-        const mkd2 = await fileFunc.makeDirectory(links.databasefiles);
+        const mkd1 = await ff.makeDirectory(links.programfiles);
+        const mkd2 = await ff.makeDirectory(links.databasefiles);
         if (!mkd1 || !mkd2) {
             throw new Error(cstyler.red.bold("Could not create output directory. Please check permissions and try again."));
         }
@@ -69,14 +69,14 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         // Lets get all the row data for each table and write them to files
         const rowDataResult = await rows.getallrows(config, metadata.raw, forceDownload);
         if (rowDataResult !== true) {
-            await fileFunc.deletePath(links.main);
+            await ff.deletePath(links.main);
             throw new Error(cstyler.red.bold("Could not retrieve row data. Backup creation failed."));
         }
         console.log(cstyler.green("Row data retrieved and written to files."));
-        const rootPath = await fileFunc.getApplicationRoot();
+        const rootPath = await ff.getApplicationRoot();
         if (fullBackup) {
             // Lets create file backup
-            const getFolderTree = await fileFunc.getFolderTree(rootPath);
+            const getFolderTree = await ff.getFolderTree(rootPath);
             delete getFolderTree['.git'];
             delete getFolderTree.node_modules;
             const fileBackup = await copyFiles(getFolderTree, links.programfiles);
@@ -88,10 +88,10 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         // If we have an output path, we will zip all the files and move the zip to the output path
         if (outputpath) {
             // Lets check folder directory
-            const isFolder = await fileFunc.isFolderPath(outputpath);
+            const isFolder = await ff.isFolderPath(outputpath);
             if(isFolder === null){
                 const folderPath = path.dirname(outputpath);
-                const createFolder = fileFunc.makeDirectory(folderPath);
+                const createFolder = ff.makeDirectory(folderPath);
                 if(createFolder === null){
                     console.error("Unable to create folder to given path.");
                     outputpath = rootPath;
@@ -99,21 +99,21 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             } else if(isFolder === false){
                 outputpath = path.dirname(outputpath);
             }
-            const zipResult = await fileFunc.zipFile(links.main, path.join(outputpath, 'backup.zip'));
+            const zipResult = await ff.zipFile(links.main, path.join(outputpath, 'backup.zip'));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
             }
             console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
             returnData = true;
         } else {
-            const zipResult = await fileFunc.zipFile(links.main, path.join(rootPath, 'backup.zip'));
+            const zipResult = await ff.zipFile(links.main, path.join(rootPath, 'backup.zip'));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red.bold("Could not create zip file. Please check permissions and try again."));
             }
             console.log(cstyler.bold.underline.green("Successfully completed the backup './backupfiles/backup'"));
             returnData = true;
         }
-        await fileFunc.deletePath(links.main);
+        await ff.deletePath(links.main);
         return returnData;
     } catch (err) {
         console.error("Backup creation failed:", err);

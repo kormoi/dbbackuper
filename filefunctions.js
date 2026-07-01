@@ -505,6 +505,9 @@ async function compressbackupfile(path, data) {
         return null;
     }
 }
+/**
+ * return true if exist, false if file, null if not exist
+ */
 async function isFolderPath(folderPath) {
     try {
         const stats = await fs.stat(folderPath);

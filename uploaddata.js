@@ -499,72 +499,272 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
     }
 }
 async function addRecord(config, databaseName, tableName, validatedData) {
-    let pool;
-    try {
-        console.log("Validated data: ", validatedData)
-        pool = await mysql.createConnection({
-            ...config,
-            database: databaseName
-        });
+    const maxRetries = 3;
 
-        const keys = Object.keys(validatedData);
-        const placeholders = [];
-        const queryValues = [];
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let pool;
+        try {
+            console.log(`[Attempt ${attempt}/${maxRetries}] Validated data: `, validatedData);
 
-        if (keys.length === 0) {
-            throw new Error("No payload parameters mapped to execute insertion.");
+            pool = await mysql.createConnection({
+                ...config,
+                database: databaseName
+            });
+
+            const keys = Object.keys(validatedData);
+            const placeholders = [];
+            const queryValues = [];
+
+            if (keys.length === 0) {
+                throw new Error("No payload parameters mapped to execute insertion.");
+            }
+
+            for (const key of keys) {
+                const value = validatedData[key];
+
+                if (value === "CURRENT_TIMESTAMP") {
+                    placeholders.push("CURRENT_TIMESTAMP");
+                }
+                // Handle pre-wrapped geometry helper strings securely via binding parameters
+                else if (typeof value === 'string' && /^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i.test(value.trim())) {
+                    const match = value.trim().match(/^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i);
+                    const rawWktBody = match[1]; // Extract just the raw coordinates: e.g. "POINT(0 0)"
+
+                    placeholders.push("ST_GeomFromText(?)");
+                    queryValues.push(rawWktBody); // Pass safely as an isolated data binding variable
+                }
+                else {
+                    placeholders.push('?');
+                    queryValues.push(value);
+                }
+            }
+
+            // Build and execute the SQL string
+            const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders.join(', ')})`;
+
+            // This is now fully safe, optimized, and prepared-statement friendly!
+            const [result] = await pool.execute(query, queryValues);
+
+            return { success: true, result: result };
+
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed adding record in ${tableName}: ${error.message}`);
+
+            if (attempt < maxRetries) {
+                // Wait for 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed adding record:`, error.message);
+                return null;
+            }
+        } finally {
+            if (pool) {
+                await pool.end();
+            }
         }
-
-        for (const key of keys) {
-            const value = validatedData[key];
-
-            if (value === "CURRENT_TIMESTAMP") {
-                placeholders.push("CURRENT_TIMESTAMP");
-            }
-            // Handle pre-wrapped geometry helper strings securely via binding parameters
-            else if (typeof value === 'string' && /^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i.test(value.trim())) {
-                const match = value.trim().match(/^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i);
-                const rawWktBody = match[1]; // Extract just the raw coordinates: e.g. "POINT(0 0)"
-
-                placeholders.push("ST_GeomFromText(?)");
-                queryValues.push(rawWktBody); // Pass safely as an isolated data binding variable
-            }
-            else {
-                placeholders.push('?');
-                queryValues.push(value);
-            }
-        }
-
-        // Build and execute the SQL string
-        const query = `INSERT INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders.join(', ')})`;
-
-        // This is now fully safe, optimized, and prepared-statement friendly!
-        const [result] = await pool.execute(query, queryValues);
-
-        return { success: true, result: result };
-
-    } catch (error) {
-        console.error(`Error adding record in ${tableName}:`, error.message);
-        return null;
-    } finally {
-        if (pool) await pool.end();
     }
 }
-async function uploadData(config, databaseName, tableName, data, schemaLayout = null) {
+async function updateRecord(config, databaseName, tableName, validatedData, primaryKeyColumn, columnTypesMap) {
+    const maxRetries = 3;
+
+    const spatialTypes = [
+        'GEOMETRY', 'POINT', 'LINESTRING', 'POLYGON',
+        'MULTIPOINT', 'MULTILINESTRING', 'MULTIPOLYGON', 'GEOMETRYCOLLECTION'
+    ];
+
+    const normalizeSpatialValue = (input) => {
+        let parsedValue = input;
+        if (typeof parsedValue === 'string') {
+            try {
+                const parsed = JSON.parse(parsedValue);
+                if (parsed && typeof parsed === 'object') parsedValue = parsed;
+            } catch { }
+        }
+
+        if (typeof parsedValue === 'object' && parsedValue !== null) {
+            const x = parsedValue.x ?? parsedValue.lng ?? parsedValue.longitude;
+            const y = parsedValue.y ?? parsedValue.lat ?? parsedValue.latitude;
+            if (x !== undefined && y !== undefined) return `POINT(${x} ${y})`;
+        } else if (typeof parsedValue === 'string') {
+            let cleaned = parsedValue.trim();
+            const geomMatch = cleaned.match(/^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i);
+            if (geomMatch) cleaned = geomMatch[1].trim();
+
+            if (/^\([+-]?\d+(\.\d+)?([,\s]+[+-]?\d+(\.\d+)?)*\)$/.test(cleaned)) {
+                return `POINT(${cleaned.replace(/[()]/g, '').split(/[\s,]+/).join(' ')})`;
+            }
+            return cleaned;
+        }
+        return input;
+    };
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let connection;
+        try {
+            connection = await mysql.createConnection({
+                ...config,
+                database: databaseName
+            });
+
+            const pkValue = validatedData[primaryKeyColumn];
+            if (pkValue === undefined || pkValue === null) {
+                throw new Error(`Primary key value for "${primaryKeyColumn}" is missing in the data.`);
+            }
+
+            const updateData = { ...validatedData };
+            delete updateData[primaryKeyColumn];
+
+            const keys = Object.keys(updateData);
+            const queryParams = [tableName];
+
+            // Construct Dynamic SET clauses using columnTypesMap[key].type
+            const setClauseArray = keys.map(key => {
+                const colType = (columnTypesMap[key]?.type || '').toUpperCase();
+                const isSpatial = spatialTypes.includes(colType);
+                let value = updateData[key] === undefined ? null : updateData[key];
+
+                if (isSpatial && value !== null) {
+                    value = normalizeSpatialValue(value);
+                    queryParams.push(key, value);
+                    return `?? = ST_GeomFromText(?)`;
+                } else {
+                    queryParams.push(key, value);
+                    return `?? = ?`;
+                }
+            });
+
+            const setClause = setClauseArray.join(', ');
+
+            // Construct Dynamic WHERE clause using columnTypesMap[primaryKeyColumn].type
+            let whereClause = '';
+            const pkType = (columnTypesMap[primaryKeyColumn]?.type || '').toUpperCase();
+            const isPkSpatial = spatialTypes.includes(pkType);
+            let finalPkValue = pkValue;
+
+            if (isPkSpatial) {
+                finalPkValue = normalizeSpatialValue(finalPkValue);
+                whereClause = `ST_Equals(??, ST_GeomFromText(?))`;
+            } else {
+                whereClause = `?? = ?`;
+            }
+
+            queryParams.push(primaryKeyColumn, finalPkValue);
+
+            const query = `UPDATE ?? SET ${setClause} WHERE ${whereClause}`;
+
+            const [result] = await connection.query(query, queryParams);
+
+            return {
+                success: true,
+                affectedRows: result.affectedRows,
+                message: "Record updated successfully"
+            };
+
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed updating record in ${tableName}: ${error.message}`);
+
+            if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed updating record:`, error.message);
+                return { success: null, error: error.message };
+            }
+        } finally {
+            if (connection) await connection.end();
+        }
+    }
+}
+async function checkRowExists(config, database, table, column, columnValue, columnType) {
+    const maxRetries = 3;
+    const type = columnType.toUpperCase();
+
+    // All known MySQL native spatial geometry types
+    const spatialTypes = [
+        'GEOMETRY', 'POINT', 'LINESTRING', 'POLYGON',
+        'MULTIPOINT', 'MULTILINESTRING', 'MULTIPOLYGON', 'GEOMETRYCOLLECTION'
+    ];
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        let connection;
+        try {
+            connection = await mysql.createConnection({
+                ...config,
+                database: database
+            });
+
+            let sql;
+            let finalValue = columnValue;
+
+            // Contextual Routing: Apply spatial preprocessing if the type is a geometry
+            if (spatialTypes.includes(type)) {
+                let parsedValue = columnValue;
+
+                // Detect and extract JSON strings if applicable
+                if (typeof parsedValue === 'string') {
+                    try {
+                        const parsed = JSON.parse(parsedValue);
+                        if (parsed && typeof parsed === 'object') parsedValue = parsed;
+                    } catch {
+                        // Not a JSON string
+                    }
+                }
+
+                // Format Normalization Pipeline
+                if (typeof parsedValue === 'object' && parsedValue !== null) {
+                    const x = parsedValue.x ?? parsedValue.lng ?? parsedValue.longitude;
+                    const y = parsedValue.y ?? parsedValue.lat ?? parsedValue.latitude;
+                    if (x !== undefined && y !== undefined) {
+                        finalValue = `POINT(${x} ${y})`;
+                    }
+                } else if (typeof parsedValue === 'string') {
+                    let cleaned = parsedValue.trim();
+
+                    // Strip any explicit 'ST_GeomFromText' prefixes
+                    const geomMatch = cleaned.match(/^ST_GeomFromText\(['"]?(.*?)['"]?\)$/i);
+                    if (geomMatch) {
+                        cleaned = geomMatch[1].trim();
+                    }
+
+                    // Convert comma tuple definitions like '(1,2)' into a valid WKT 'POINT(1 2)'
+                    if (/^\([+-]?\d+(\.\d+)?([,\s]+[+-]?\d+(\.\d+)?)*\)$/.test(cleaned)) {
+                        const coords = cleaned.replace(/[()]/g, '').split(/[\s,]+/).join(' ');
+                        finalValue = `POINT(${coords})`;
+                    } else {
+                        finalValue = cleaned;
+                    }
+                }
+
+                sql = "SELECT 1 FROM ?? WHERE ST_Equals(??, ST_GeomFromText(?)) LIMIT 1";
+            } else {
+                // Standard structural data type path (INT, VARCHAR, etc.)
+                sql = "SELECT 1 FROM ?? WHERE ?? = ? LIMIT 1";
+            }
+
+            const [rows] = await connection.query(sql, [table, column, finalValue]);
+            return rows.length;
+
+        } catch (error) {
+            console.warn(`⚠️ Attempt ${attempt}/${maxRetries} failed checking row existence: ${error.message}`);
+
+            if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+                console.error(`❌ All ${maxRetries} attempts failed checking row existence:`, error.message);
+                return null;
+            }
+        } finally {
+            if (connection) await connection.end();
+        }
+    }
+}
+async function uploadData(config, databaseName, tableName, data, schemaLayout = null, type = "replace", updateType = "keep-new") {
     try {
         if (schemaLayout === null) {
-            const tableMetadata = await getmtd.getTableSchemaLayout(config, databaseName, tableName);
-            if (tableMetadata === null) {
-                throw new Error("Having problem getting table schema layout.");
-            } else if (tableMetadata === false) {
-                console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)}`);
-                return false;
-            }
-            schemaLayout = tableMetadata;
+            return null;
         }
         for (const col of Object.keys(data)) {
             const colData = data[col];
-            if (fncs.isJsonObject(colData) && Object.hasOwn(colData, "isSaved") && colData.isSaved === true && Object.hasOwn(colData,"fileName") && Object.hasOwn(colData,"extention") && Object.hasOwn(colData,"filepath") && Object.hasOwn(colData,"fullpath")) {
+            if (fncs.isJsonObject(colData) && Object.hasOwn(colData, "isSaved") && colData.isSaved === true && Object.hasOwn(colData, "fileName") && Object.hasOwn(colData, "extention") && Object.hasOwn(colData, "filepath")) {
                 const filePath = colData.filepath;
                 const getBuffer = await ff.fileToBuffer(filePath);
                 if (getBuffer === null) {
@@ -572,7 +772,7 @@ async function uploadData(config, databaseName, tableName, data, schemaLayout = 
                 }
                 data[col] = getBuffer;
             } else {
-                //{ isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file', fullpath: savefile.path }
+                //{ isSaved: true, fileName: savefile.fileName, extention: savefile.extension, filepath: path.join(filePath, savefile.fileName), type: 'file' }
                 data[col] = toOriginal(data[col]);
             }
         }
@@ -581,35 +781,72 @@ async function uploadData(config, databaseName, tableName, data, schemaLayout = 
         if (validatedData === null) {
             throw new Error("Unable to validate data.");
         }
-        // Lets add record to the table
-        const addrec = await addRecord(config, databaseName, tableName, validatedData);
-        if (addrec === null) {
-            throw new Error("The server is cousing error.");
+        // Lets get primary column information
+        let primaryCol = null;
+        let priExist = false;
+        for (const col of Object.keys(schemaLayout)) {
+            const colSchema = schemaLayout[col];
+            if (colSchema.isPrimary === true) {
+                primaryCol = col;
+                const priColVal = validatedData[col];
+                const ifExist = await checkRowExists(config, databaseName, tableName, col, priColVal, colSchema.type);
+                if (ifExist === null) {
+                    throw new Error("Having problem cheching if row exist or not. Must be a server problem. Please try again.");
+                }
+                if (ifExist) {
+                    priExist = true;
+                }
+            }
         }
-        console.log(addrec)
-        return addrec;
-    } catch (err) {
-        console.error(`Having problem uploading data to the server ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - Error message: ${err.message}`);
+
+        if (type === "merge") {
+            if (primaryCol === null) {
+                const addRC = await addRecord(config, databaseName, tableName, validatedData);
+                if (addRC === null) {
+                    throw new Error(`Unable to add Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
+                }
+                return true;
+            } else if (updateType === "keep-new") {
+                const updateRC = await updateRecord(config, databaseName, tableName, validatedData, primaryCol, schemaLayout);
+                if (updateRC.success === null) {
+                    throw new Error(`Unable to update Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
+                }
+                return true;
+            }
+        } else if (type === "replace") {
+            const updateRC = await updateRecord(config, databaseName, tableName, validatedData, primaryCol, schemaLayout);
+            if (updateRC.success === null) {
+                throw new Error(`Unable to update Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
+            }
+            return true;
+        } else {
+            const addRC = await addRecord(config, databaseName, tableName, validatedData);
+            if (addRC === null) {
+                throw new Error(`Unable to add Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
+            }
+            return true;
+        }
+    } catch (e) {
+        console.error(`Having problem uploading data to the server ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - Error message: ${e.message}`);
         return null;
     }
 }
-async function uploadMultiRow(config, databaseName, tableName, data) {
+async function uploadMultiRow(config, databaseName, tableName, data, type = "replace", updateType = "keep-new") {
     let count = 0;
-    let addedData = [];
     try {
         const schemaLayout = await getmtd.getTableSchemaLayout(config, databaseName, tableName);
         if (schemaLayout === null) {
             throw new Error("Having problem getting table schema layout.");
         } else if (schemaLayout === false) {
-            console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.purple(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.purple(tableName)}`);
-            return false;
+            console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.purple(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.purple(tableName)} - it means there is a problem in database setting data. Please upload proper zipped file and try again.`);
+            return { success: false, count: count };
         }
         if (!Array.isArray(data)) {
             throw new Error("Valid array data required.");
         }
         while (data.length > 0) {
             const item = data.pop();
-            const upload = await uploadData(config, databaseName, tableName, item, schemaLayout);
+            const upload = await uploadData(config, databaseName, tableName, item, schemaLayout, type, updateType = "keep-new");
             if (upload === null) {
                 throw new Error("Unable to upload data to database");
             }
@@ -618,7 +855,75 @@ async function uploadMultiRow(config, databaseName, tableName, data) {
         return { success: true, count: count }
     } catch (err) {
         console.error(`Having problem adding record multiple row on ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - Error message: ${err.message}`);
-        return { success: null, data: data, count: count }
+        return { success: null, count: count }
+    }
+}
+async function uploadAllData(config, type = "replace", updateType = "keep-new") {
+    let offsetData = {}
+    try {
+        // Lets get folder tree
+        console.log(cstyler.bold.yellow("Please wait. We are uploading data..."));
+        const fldrTree = await ff.getFolderTree(links.database);
+        if (fldrTree === null) {
+            throw new Error("Having problem getting folder content from extracted backup file. Please check permission.");
+        }
+        // lets check file folder exist or not
+        let filesFolderExist = false;
+        if (Object.hasOwn(fldrTree, "files") && Object.hasOwn(fldrTree.files, "contents") && fncs.isJsonObject(fldrTree.files.contents)) {
+            filesFolderExist = true;
+        }
+        // Lets check all json files one by one
+        for (const item of Object.keys(fldrTree)) {
+            const fileItem = fldrTree[item];
+            if (fileItem.name === "dbtaskerdata.json" || fileItem.name === "raw.json" || (fileItem.type === "folder" && fileItem.name === "files")) {
+                continue;
+            }
+            if (fileItem.type === "folder" && fileItem.name !== "files") {
+                throw new Error("Unwanted folder found inside backup compressed zip file. File have changed. Please do not use un protected file. Pleae upload file that was backup by DBBACKUPER tool. Please upload a proper file.");
+            }
+            if (fileItem.extension !== ".json" || !fncs.isNumber(getBaseNameWithoutExt(fileItem.name))) {
+                throw new Error("We have found differant file name or type than we normally backup using DBBACKUPER. File must be changed. For your security we are abborting. Please upload a right file.");
+            }
+            // Lets check backedup file now
+            const readfile = await ff.readJsonFile(fileItem.path);
+            if (readfile === null) {
+                throw new Error("Having problem reading JSON data from files. Please check permission and try agina.");
+            }
+            for (const db of Object.keys(readfile)) {
+                if (!fncs.isJsonObject(readfile[db])) {
+                    throw new Error("File must be damaged, deprecated or changed. We are abborting for your security.");
+                }
+                if (!Object.hasOwn(offsetData, db) && type === "merge") offsetData[db] = {};
+                for (const table of Object.keys(readfile[db])) {
+                    const tableData = readfile[db][table];
+                    if (!Array.isArray(tableData)) {
+                        throw new Error("File must be damaged, deprecated or changed. We are abborting for your security.");
+                    }
+                    if (tableData.length > 0) {
+                        console.log(cstyler.hex("#00e1ff")(`We are working on ${cstyler.purple("Database:")} ${cstyler.blue(db)} ${cstyler.purple("Table:")} ${cstyler.blue(table)}`));
+                    } else {
+                        continue;
+                    }
+                    if (!Object.hasOwn(offsetData[db], table) && type === "merge") offsetData[db][table] = { start: 0, count: 0 };
+                    if (type === "merge") {
+                        const totalRow = await getmtd.getTableRowCount(config, db, table);
+                        if (totalRow === null) {
+                            throw new Error(`Having problem getting total row count on Database: ${db} Table: ${table}`);
+                        }
+                        offsetData[db][table].start = totalRow;
+                    }
+                    const addTableRows = await uploadMultiRow(config, db, table, tableData, type, updateType);
+                    offsetData[db][table].count = addTableRows.count;
+                    if (addTableRows.success !== true) {
+                        throw new Error("Unable to upload data to database. Please try again. We may have added few rows. Count as follows:", offsetData);
+                    }
+                }
+            }
+        }
+        return true;
+    } catch (e) {
+        console.error("Having problem in backup process. Error message: ", e.message);
+        return null;
     }
 }
 async function clearAllRows(config, databaseName, tableName) {

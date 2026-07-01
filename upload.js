@@ -5,10 +5,41 @@ const dbtasker = require("dbtasker");
 const ff = require("./filefunctions");
 const links = require("./links");
 const valcc = require("./validateUploads");
+const upl = require("./uploaddata");
 
 
 
-
+async function moveFiles(folderTree, destinationFolder) {
+    try {
+        for (const item of Object.keys(folderTree)) {
+            const folderContent = folderTree[item];
+            if (Object.hasOwn(folderContent, "contents") && fncs.isJsonObject(folderContent.contents)) {
+                const destinationPath = path.resolve(path.join(destinationFolder, item));
+                const mkdir = await ff.makeDirectory(destinationPath);
+                if (mkdir === null) {
+                    throw new Error("Unable to create folder.");
+                }
+                const recurse = await moveFiles(folderContent.contents, destinationPath);
+                if (recurse === null) {
+                    return null;
+                }
+            } else {
+                const copyFile = await ff.copyFileToFolder(folderContent.path, destinationFolder);
+                if (copyFile.success === false) {
+                    throw new Error(copyFile.message);
+                }
+                const delFile = await ff.deletePath(folderContent.path);
+                if (delFile !== true) {
+                    throw new Error("Unable to delete copied file.");
+                }
+            }
+        }
+        return true;
+    } catch (err) {
+        console.error("Unable to copy files. Error message: ", err.message);
+        return null;
+    }
+}
 async function validateDBTaskerData(config, data) {
     try {
         let tableCount = 0;
@@ -75,15 +106,59 @@ async function validateDBTaskerData(config, data) {
         return null;
     }
 }
+function _folderNameExist(data, name) {
+    for (const item of Object.keys(data)) {
+        if (item === name) {
+            return true;
+        }
+    }
+    return false;
+}
 async function fileBackup() {
-    try{
+    try {
         const rootPath = await ff.getApplicationRoot();
-    }catch(e){
+        const rootTree = await ff.getFolderTree(rootPath);
+        const progTree = await ff.getFolderTree(links.programfiles);
+        if (rootTree === null || progTree === null) {
+            throw new Error("Having problem getting folder content from file system. Please check permission and try again.");
+        }
+        let oldFolderName = "Old_files";
+        let count = 1;
+        while (true) {
+            const onRootExist = _folderNameExist(rootTree, oldFolderName);
+            const onProgramExist = _folderNameExist(progTree, oldFolderName);
+            if (onRootExist || onProgramExist) {
+                if (!oldFolderName.endsWith(String(new Date().getFullYear()))) {
+                    oldFolderName = oldFolderName + "_" + new Date().getFullYear();
+                } else {
+                    oldFolderName = "Old_files" + "_" + count;
+                    count++;
+                }
+            } else {
+                break;
+            }
+        }
+        // Lets move all the files to new folder
+        const newFolderPath = path.resolve(path.join(rootPath, oldFolderName));
+        const mkdir = await ff.makeDirectory(newFolderPath);
+        if (mkdir === null) {
+            throw new Error("Unable to make directory to root path. Please check permission and try again.");
+        }
+        const moveToFolder = await moveFiles(rootTree, newFolderPath);
+        if (moveToFolder !== true) {
+            throw new Error("Unable to move files from root directory.");
+        }
+        const moveFromBackup = await moveFiles(progTree, rootPath);
+        if (moveFromBackup !== true) {
+            throw new Error("Unable to move files from backup to root folder. Please check permission and try again.");
+        }
+        return true;
+    } catch (e) {
         console.error("Having problem doint the file backup. Error message: ", e.message);
         return null;
     }
 }
-async function uploadBackup(config, zipPath, type = 'merge') {
+async function uploadBackup(config, zipPath, type = 'replace', updateType = "keep-new") {
     try {
         zipPath = path.resolve(zipPath);
         const isFile = await ff.isfilepathwithext(zipPath, 'zip');
@@ -117,14 +192,20 @@ async function uploadBackup(config, zipPath, type = 'merge') {
         }
         // Lets validate json row data
         const valJsonRowData = await valcc.validateJsonRowData();
-        if(valJsonRowData === null){
+        if (valJsonRowData === null) {
             throw new Error("Unable to validate backup row data.");
         }
         /**
          * If it is a full Backup and we don't put full file system user may request for data
          * We have to complete file system first
          */
-        const isFullBackup = await fileBackup();
+        const isFullBackup = await ff.isFolderPath(links.programfiles);
+        if (isFullBackup) {
+            const backupAllFiles = await fileBackup();
+            if (backupAllFiles !== true) {
+                throw new Error("Unable to create file backup. Please check permission and try again.");
+            }
+        }
         // Lets organize dbtasker configuration
         let dbtaskerconfig = {};
         dbtaskerconfig.user = config.user;
@@ -132,15 +213,21 @@ async function uploadBackup(config, zipPath, type = 'merge') {
         dbtaskerconfig.host = config.host;
         dbtaskerconfig.port = config.port;
         dbtaskerconfig.dropdb = false;
-        if (type === 'replace') {
+        if (type === "clean") {
             dbtaskerconfig.droptable = true;
             dbtaskerconfig.dropcol = true;
+            dbtaskerconfig.forcedeletecolumn = true;
+
+        } else if (type === 'replace') {
+            dbtaskerconfig.droptable = true;
+            dbtaskerconfig.dropcol = true;
+            dbtaskerconfig.forcedeletecolumn = false;
         } else {
             dbtaskerconfig.droptable = false;
             dbtaskerconfig.dropcol = false;
+            dbtaskerconfig.forcedeletecolumn = false;
         }
         dbtaskerconfig.forceupdatecolumn = true;
-        dbtaskerconfig.forcedeletecolumn = false;
         dbtaskerconfig.sep = "_";
         // Lets setup database configuration from backup
         const operatedb = await dbtasker(config, dbtaskerdata);
@@ -148,7 +235,28 @@ async function uploadBackup(config, zipPath, type = 'merge') {
             throw new Error("Unable to setup database. Please try again.");
         }
         // Let's upload all the rows
-        
+        if (type === "clean") {
+            for (const db of Object.keys(dbtaskerdata)) {
+                if (!fncs.isJsonObject(dbtaskerdata[db])) {
+                    continue;
+                }
+                for (const table of Object.keys(dbtaskerdata[db])) {
+                    if (!fncs.isJsonObject(dbtaskerdata[db][table])) {
+                        continue;
+                    }
+                    const clearRows = await upl.clearAllRows(config, db, table);
+                    if (clearRows.success === false) {
+                        return null;
+                    }
+                }
+            }
+        }
+        const uploadAllRows = await upl.uploadAllData(config, type, updateType);
+        if (uploadAllRows === null) {
+            throw new Error("Having problem uploading row data from backup. Please try again.")
+        }
+        console.log(cstyler.bold.underline.green("Successfully uploaded all the backup."));
+        return true;
     } catch (err) {
         console.error("Having problem uploading backup. Error message: ", err.message);
         return null;

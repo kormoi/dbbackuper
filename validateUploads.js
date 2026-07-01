@@ -2,6 +2,7 @@ const mysql = require('mysql2/promise');
 const ff = require("./filefunctions");
 const links = require("./links");
 const fncs = require("./functions");
+const cstyler = require("cstyler");
 
 
 
@@ -249,6 +250,7 @@ async function validateColumnConfig(config, characterSet, collation) {
 
 async function validateJsonRowData() {
     try {
+        console.log(cstyler.bold.yellow("Please wait. We are validating data."));
         // Lets get folder tree
         const fldrTree = await ff.getFolderTree(links.database);
         if (fldrTree === null) {
@@ -275,27 +277,33 @@ async function validateJsonRowData() {
                     } else {
                         // Lets check backedup file now
                         const readfile = await ff.readJsonFile(fileItem.path);
-                        if(readfile === null){
+                        if (readfile === null) {
                             throw new Error("Having problem reading JSON data from files. Please check permission and try agina.");
                         }
                         else {
-                            for(const db of Object.keys(readfile)){
-                                if(!fncs.isJsonObject(readfile[db])){
+                            for (const db of Object.keys(readfile)) {
+                                if (!fncs.isJsonObject(readfile[db])) {
                                     throw new Error("File must be damaged, deprecated or changed. We are abborting for your security.");
                                 }
-                                for (const table of Object.keys(readfile[db])){
-                                    if(!Array.isArray(readfile[db][table])){
-                                        throw new Error("File must be damaged, deprecated or changed. We are abborting for your security.");
+                                for (const table of Object.keys(readfile[db])) {
+                                    if (!Array.isArray(readfile[db][table])) {
+                                        throw new Error("File must be damaged, deprecated or changed. We are abborting for security reason.");
                                     }
-                                    for(const col of readfile[db][table]){
-                                        if(!fncs.isJsonObject(col)){
-                                            continue;
+                                    for (const row of readfile[db][table]) {
+                                        if (!fncs.isJsonObject(row)) {
+                                            throw new Error("File must be damaged, deprecated or changed. We are abborting for security reason.");
                                         }
-                                        if(Object.hasOwn(col, "isSaved") && col.isSaved === true){
-                                            const isfile = await ff.isfilepath(col.filepath);
-                                            if(isfile !== true){
-                                                throw new Error("Unable to find backup files that were saved when preparing the backup of your database.");
+                                        for (const col of Object.keys(row)) {
+                                            if (!fncs.isJsonObject(row[col])) {
+                                                continue;
                                             }
+                                            if (Object.hasOwn(row[col], "isSaved") && row[col].isSaved === true) {
+                                                const isfile = await ff.isfilepath(row[col].filepath);
+                                                if (isfile !== true) {
+                                                    throw new Error("Unable to find backup files that were saved when preparing the backup of your database.");
+                                                }
+                                            }
+
                                         }
                                     }
                                 }
