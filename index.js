@@ -4,6 +4,7 @@ const ff = require('./filefunctions');
 const cstyler = require('cstyler');
 const upl = require("./upload");
 const dwn = require("./createbackup");
+const getmtd = require("./getmetadata");
 
 
 
@@ -174,16 +175,16 @@ async function getConfigValue(config) {
       user: data.user,
       password: data.password
     }
-    const isconfig = fncs.isValidMySQLConfig(config);
+    const isconfig = fncs.isValidDbConfig(data.config);
     if (!isconfig) {
-      return { successful: false, message: "Invalid MySQL configuration provided. Please check the configuration object." };
+      return { successful: false, message: "Invalid database configuration provided. Please check the configuration object." };
     }
-    const ifmysqldatabase = await fncs.isMySQLDatabase(config);
+    const ifmysqldatabase = await fncs.isMySQLDatabase(data.config);
     if (ifmysqldatabase === false) {
       console.error("My SQL database is required to run DBBACKUPER module. Please install mysql2 to use this module. To install run this code on the terminal > npm install mysql2");
       return { successful: false, message: "My SQL database is required to run DBBACKUPER module. Please install mysql2 to use this module. To install run this code on the terminal > npm install mysql2" };
     }
-    const isvalidmysqlversion = await getmtd.isMySQL578OrAbove(config);
+    const isvalidmysqlversion = await getmtd.isMySQL578OrAbove(data.config);
     if (isvalidmysqlversion === false) {
       console.error("My SQL version 5.7.8 or above is required. Please check if you have installed mysql2. To install: npm install mysql2");
       return { successful: false, message: "My SQL version 5.7.8 or above is required. Please check if you have installed mysql2. To install: npm install mysql2" }
@@ -292,7 +293,7 @@ module.exports = async function (configData) {
       return { successful: true, message: uploadfile.message }
     }
   } catch (error) {
-    console.error(`Error processing file at ${filePath}:`, error.message);
+    console.error(`Error processing request:`, error.message);
     return;
   }
 };
