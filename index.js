@@ -9,7 +9,7 @@ const getmtd = require("./getmetadata");
 
 
 
-const version = "1.2.6";
+const version = "1.2.7";
 
 const pathAliases = [
   // Base variations
