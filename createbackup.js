@@ -16,12 +16,11 @@ async function copyFiles(folderTree, destinationFolder) {
         for (const item of Object.keys(folderTree)) {
             const folderContent = folderTree[item];
             if (Object.hasOwn(folderContent, "contents") && fncs.isJsonObject(folderContent.contents)) {
-                const destinationPath = path.resolve(path.join(destinationFolder, item));
-                const mkdir = await ff.makeDirectory(destinationPath);
+                const mkdir = await ff.makeDirectory(destinationFolder);
                 if (mkdir === null) {
                     throw new Error("Unable to create folder.");
                 }
-                const recurse = await copyFiles(folderContent.contents, destinationPath);
+                const recurse = await copyFiles(folderContent.contents, destinationFolder);
                 if (recurse === null) {
                     return null;
                 }
@@ -75,7 +74,6 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         }
         console.log(cstyler.green("Row data retrieved and written to files."));
         const rootPath = await ff.getApplicationRoot();
-        outputpath = path.join(rootPath, outputpath);
         if (fullBackup) {
             // Lets create file backup
             const getFolderTree = await ff.getFolderTree(rootPath);
@@ -88,64 +86,43 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         }
         let returnData = false;
         // If we have an output path, we will zip all the files and move the zip to the output path
-        if (outputpath) {
-
-            // Lets check folder directory
-            const isFolder = await ff.isFolderPath(outputpath);
-            if (isFolder === null) {
-                const folderPath = path.dirname(outputpath);
-                const createFolder = ff.makeDirectory(folderPath);
-                if (createFolder === null) {
-                    console.error("Unable to create folder to given path.");
-                    outputpath = rootPath;
-                }
-            } else if (isFolder === false) {
-                outputpath = path.dirname(outputpath);
-            }
-            let count = 0;
-            let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
-            while (true) {
-                if (count > 0) {
-                    fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
-                }
-                const fileExist = await ff.isFilePath(path.join(outputpath, fileNameWD));
-                if (fileExist === null) {
-                    throw new Error("Unable to check if file exists. Please check permissions and try again.");
-                }
-                if (fileExist === false) {
-                    break;
-                }
-                count++;
-            }
-            const zipResult = await ff.zipFile(links.main, path.join(outputpath, fileNameWD));
-            if (!zipResult) {
-                throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
-            }
-            console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
-            returnData = true;
-        } else {
-            let count = 0;
-            let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
-            while (true) {
-                if (count > 0) {
-                    fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
-                }
-                const fileExist = await ff.isFilePath(path.join(rootPath, fileNameWD));
-                if (fileExist === null) {
-                    throw new Error("Unable to check if file exists. Please check permissions and try again.");
-                }
-                if (fileExist === false) {
-                    break;
-                }
-                count++;
-            }
-            const zipResult = await ff.zipFile(links.main, path.join(rootPath, fileNameWD));
-            if (!zipResult) {
-                throw new Error(cstyler.bold.red.bold("Could not create zip file. Please check permissions and try again."));
-            }
-            console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
-            returnData = true;
+        if (!outputpath) {
+            outputpath = rootPath;
         }
+
+        // Lets check folder directory
+        const isFolder = await ff.isFolderPath(outputpath);
+        if (isFolder === null) {
+            const folderPath = path.dirname(outputpath);
+            const createFolder = ff.makeDirectory(folderPath);
+            if (createFolder === null) {
+                console.error("Unable to create folder to given path.");
+                outputpath = rootPath;
+            }
+        } else if (isFolder === false) {
+            outputpath = path.dirname(outputpath);
+        }
+        let count = 0;
+        let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
+        while (true) {
+            if (count > 0) {
+                fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
+            }
+            console.log(path.join(outputpath, fileNameWD))
+            const fileExist = await ff.isfilepath(path.join(outputpath, fileNameWD), '.zip');
+            console.log('outputpath', outputpath)
+            if (fileExist !== true) {
+                break;
+            }
+            count++;
+        }
+        const zipResult = await ff.zipFile(links.main, path.join(outputpath, fileNameWD));
+        if (!zipResult) {
+            throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
+        }
+        console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
+        returnData = true;
+
         await ff.deletePath(links.main);
         return returnData;
     } catch (err) {

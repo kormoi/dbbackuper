@@ -429,29 +429,21 @@ async function unzipFile(zipFilePath, destinationFolderPath) {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            console.log(1);
             const unzipperModule = await import('unzipper');
-            console.log(2);
             const unzipper = unzipperModule.default || unzipperModule;
-            console.log(3);
 
             const srcPath = path.resolve(zipFilePath);
             const destFolder = path.resolve(destinationFolderPath);
 
-            console.log(4);
             // Ensure target folder directory exists
             await fs.mkdir(destFolder, { recursive: true });
-            console.log(5);
 
-            console.log(6);
             // FIXED: Open the zip file directly using unzipper's robust promise layer
             const directory = await unzipper.Open.file(srcPath);
-            console.log(7);
 
-            console.log(8);
             // Extract everything cleanly using the engine's native promise tracker
             await directory.extract({ path: destFolder });
-            console.log(9); // This will now fire perfectly!
+            // This will now fire perfectly!
 
             console.log(`Successfully extracted archive to: ${destinationFolderPath}`);
             return true;

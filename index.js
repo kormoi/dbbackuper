@@ -9,7 +9,7 @@ const getmtd = require("./getmetadata");
 
 
 
-
+const version = "1.2.6";
 
 const pathAliases = [
   // Base variations
@@ -275,6 +275,7 @@ module.exports = async function (configData) {
     if (data.successful === false) {
       return data;
     }
+    console.log(cstyler.bold.green("DBBACKUPER"), cstyler.green(version));
     // lets work on backup operation
     if (data.workmode === "download") {
       // Lets backup the database

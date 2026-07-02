@@ -11,6 +11,7 @@ const upl = require("./uploaddata");
 
 async function moveFiles(folderTree, destinationFolder) {
     try {
+
         for (const item of Object.keys(folderTree)) {
             const folderContent = folderTree[item];
             if (Object.hasOwn(folderContent, "contents") && fncs.isJsonObject(folderContent.contents)) {
@@ -117,7 +118,10 @@ function _folderNameExist(data, name) {
 async function fileBackup() {
     try {
         const rootPath = await ff.getApplicationRoot();
-        const rootTree = await ff.getFolderTree(rootPath);
+        let rootTree = await ff.getFolderTree(rootPath);
+        if (rootTree?.node_modules && rootTree?.node_modules?.contents?.dbbackuper) {
+            delete rootTree.node_modules;
+        }
         const progTree = await ff.getFolderTree(links.programfiles);
         if (rootTree === null || progTree === null) {
             throw new Error("Having problem getting folder content from file system. Please check permission and try again.");
@@ -200,7 +204,8 @@ async function uploadBackup(config, zipPath, type = 'replace') {
          * We have to complete file system first
          */
         const isFullBackup = await ff.isFolderPath(links.programfiles);
-        if (isFullBackup) {
+        const programFolderTree = await ff.getFolderTree(links.programfiles);
+        if (isFullBackup && Object.keys(programFolderTree).length > 0) {
             const backupAllFiles = await fileBackup();
             if (backupAllFiles !== true) {
                 throw new Error("Unable to create file backup. Please check permission and try again.");

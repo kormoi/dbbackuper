@@ -327,4 +327,5 @@ module.exports = {
     validateDatabaseConfig,
     validateTableConfig,
     validateColumnConfig,
+    validateJsonRowData,
 }
