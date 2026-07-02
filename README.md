@@ -119,7 +119,7 @@ When running an **Upload/Import** work mode, passing down a strategy key configu
 ## 💻 Technical Usage Example
 ```js
 JavaScript
-import { DBBackuper } from 'dbbackuper';
+const DBBackuper = require('dbbackuper');
 
 // Intentionally mixed/spaced config keys that map perfectly inside the engine
 const messyUserConfig = {
@@ -127,14 +127,15 @@ const messyUserConfig = {
     "db_user": "root",                              // user: "admin_etc"
     "SECRET": "super_secure_pass",                  // Database passowrd
     "port": 3306,
-    "target db": "production_warehouse",                // That you want to backup
+    "target db": "production_warehouse",            // That you want to backup or you can keep it empty then system will deside
     "work mode": "import_backup" || "upload backup" || "download",          // Evaluates as Upload Mode
     "sync strategy": "skip_existing",      // Best describe in three words clean(delete everything old) or replace(change database setting and replace if primary key exist) or merge(change setting and do not add replace data if exist)
-    "folder path": "./backups/july_2026/" // if uploading file path "./backup/july_2026.zip" must be zip 
+    "folder path": "./backups/july_2026/" // if uploading file path "./backup/july_2026.zip" must be zip
+    "full backup": true; // by default it is false (if you want to backup program files also or not)
+    "force download"; false; // if true it will leave those rows that contain bigger data on a single column then available RAM
 };
 
-const backupEngine = new DBBackuper(messyUserConfig);
-await backupEngine.execute();
+const backupEngine = await DBBackuper(messyUserConfig);
 console.log("Operation handled successfully via automated alias extraction!");
 ```
 
