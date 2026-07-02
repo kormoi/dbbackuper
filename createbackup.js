@@ -75,6 +75,7 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         }
         console.log(cstyler.green("Row data retrieved and written to files."));
         const rootPath = await ff.getApplicationRoot();
+        outputpath = path.join(rootPath, outputpath);
         if (fullBackup) {
             // Lets create file backup
             const getFolderTree = await ff.getFolderTree(rootPath);
@@ -88,6 +89,7 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         let returnData = false;
         // If we have an output path, we will zip all the files and move the zip to the output path
         if (outputpath) {
+
             // Lets check folder directory
             const isFolder = await ff.isFolderPath(outputpath);
             if (isFolder === null) {
@@ -128,7 +130,7 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
                 if (count > 0) {
                     fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
                 }
-                const fileExist = await ff.isFilePath(path.join(outputpath, fileNameWD));
+                const fileExist = await ff.isFilePath(path.join(rootPath, fileNameWD));
                 if (fileExist === null) {
                     throw new Error("Unable to check if file exists. Please check permissions and try again.");
                 }
