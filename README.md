@@ -1,9 +1,27 @@
-🛠️ Configuration & Smart Aliases
-You do not need to memorize exact property structures. The internal parsing architecture normalizes all incoming arguments (lowercase, stripping underscores/hyphens, resolving spaces) and matches them against our global alias groups.1. Database Connection ParametersSpecify connection details using your infrastructure's native keys.Standard TermSupported Key Variations & AliasesHosthost, hostname, server, ip, address, domain, endpoint, url, db_host, dbhost, db host, database_hostPortport, portnumber, conn_port, connection_port, db_port, dbport, db port, database_portUseruser, username, uid, role, account, login, profile, db_user, dbuser, db user, database_userPasswordpassword, pass, pwd, secret, cred, credential, token, auth, db_password, dbpass, dbpwdDatabase/DBdb, database, schema, db_list, dblist, db_name, database_name, target_db, source_database2. Operation Core (Work Mode & Slates)Control how the module initializes actions.workMode Key Mapping: mode, workmode, work_mode, action, operation, job, task, type, command, direction, method, strategy, process, runmodeuploadType Key Mapping: type, uploadtype, upload_type, strategy, syncstrategy, sync_strategy, policy, conflictpolicy, conflict_policy, behaviorpath Key Mapping: path, dir, directory, folder, location, destination, source, target, filepath, folder_path, output_path, save_path (Pure path terms—no backup suffix configuration required)
+# 🗄️ DBBACKUPER
 
-⚙️ Work Mode ConfigurationsWhen assigning values to your configurations, you can use any matching action parameter value.Download / Export ActionsTriggers an output data compilation sequence.Accepted values: download, export, dump, extract, pull, retrieve, save, fetch, outbound (+ automatic variations like download_backup, downloadbackup, db_dump, data_export).Upload / Import ActionsFeeds data back into your target schema configuration.Accepted values: upload, import, load, restore, push, feed, ingest, inbound (+ automatic variations like upload_backup, uploadbackup, db_import, file_upload).
+## 🛠️ Configuration & Smart Aliases
+You do not need to memorize exact property structures. The internal parsing architecture normalizes all incoming arguments (lowercase, stripping underscores/hyphens, resolving spaces) and matches them against our global alias groups.
 
-🎯 Upload & Synchronization Type StrategiesWhen running an Upload/Import work mode, passing down a strategy key configulates how primary key collisions or old vs. new data boundaries handle interactions. Every strategy parameter automatically processes base terms, _backup, backup, and  backup suffixes flawlessly.
+### 1. Database Connection Parameters
+Specify connection details using your infrastructure's native keys.
+
+Standard Term | Supported Key Variations & Aliases
+| :--- | :--- |
+| **Host** | host, hostname, server, ip, address, domain, endpoint, url, db_host, dbhost, db host, database_host |
+| **Port** | port, portnumber, conn_port, connection_port, db_port, dbport, db port, database_port |
+| **User** | user, username, uid, role, account, login, profile, db_user, dbuser, db user, database_user |
+| **Password** | password, pass, pwd, secret, cred, credential, token, auth, db_password, dbpass, dbpwd |
+| **Database/DB** | db, database, schema, db_list, dblist, db_name, database_name, target_db, source_database |
+
+### 2. Operation Core (Work Mode & Slates)
+Control how the module initializes actions.workMode Key Mapping: mode, workmode, work_mode, action, operation, job, task, type, command, direction, method, strategy, process, runmodeuploadType Key Mapping: type, uploadtype, upload_type, strategy, syncstrategy, sync_strategy, policy, conflictpolicy, conflict_policy, behaviorpath Key Mapping: path, dir, directory, folder, location, destination, source, target, filepath, folder_path, output_path, save_path (Pure path terms—no backup suffix configuration required)
+
+## ⚙️ Work Mode Configurations
+When assigning values to your configurations, you can use any matching action parameter value.Download / Export ActionsTriggers an output data compilation sequence.Accepted values: download, export, dump, extract, pull, retrieve, save, fetch, outbound (+ automatic variations like download_backup, downloadbackup, db_dump, data_export).Upload / Import ActionsFeeds data back into your target schema configuration.Accepted values: upload, import, load, restore, push, feed, ingest, inbound (+ automatic variations like upload_backup, uploadbackup, db_import, file_upload).
+
+## 🎯 Upload & Synchronization Type Strategies
+When running an Upload/Import work mode, passing down a strategy key configulates how primary key collisions or old vs. new data boundaries handle interactions. Every strategy parameter automatically processes base terms, _backup, backup, and  backup suffixes flawlessly.
 
                   ┌───────────────────────────────┐
                   │      Is Primary Key Match?    │
