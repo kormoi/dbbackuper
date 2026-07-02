@@ -77,20 +77,21 @@ When running an **Upload/Import** work mode, passing down a strategy key configu
 
 
 
-                  ┌───────────────────────────────┐
-                  │      Is Primary Key Match?    │
-                  └───────────────┬───────────────┘
-                                  │
-                 ┌────────────────┴────────────────┐
-                 ▼                                 ▼
-       [ NO PK COLLISION ]                [ PK COLLISION MATCH ]
-                 │                                 │
-                 ▼                                 ▼
-        Direct Safe Insert               Evaluate Upload Strategy:
-                                        ├── clean -> Wipe table first
-                                        ├── merge -> Safe skip / Protect old
-                                        ├── replace -> Force overwrite / Newest wins
-                                        └── force -> Force export file overwrite
+                ┌───────────────────────────────┐
+                │      Is Primary Key Match?    │
+                └───────────────┬───────────────┘
+                                │
+                ┌────────────────┴────────────────┐
+                ▼                                 ▼
+    [ NO PK COLLISION ]                [ PK COLLISION MATCH ]
+                │                                 │
+                ▼                                 ▼
+    Direct Safe Insert               Evaluate Upload Strategy:
+                                    ├── clean -> Wipe table first then add row
+                                    ├── merge -> Safe skip / Protect old
+                                    ├── replace -> Force overwrite / Newest wins
+                                    └── force -> Force download file
+                                        (skips bigger than available ram files inside database)
 
 
 

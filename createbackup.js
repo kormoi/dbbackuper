@@ -100,14 +100,44 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             } else if (isFolder === false) {
                 outputpath = path.dirname(outputpath);
             }
-            const zipResult = await ff.zipFile(links.main, path.join(outputpath, 'backup.zip'));
+            let count = 0;
+            let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
+            while (true) {
+                if (count > 0) {
+                    fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
+                }
+                const fileExist = await ff.isFilePath(path.join(outputpath, fileNameWD));
+                if (fileExist === null) {
+                    throw new Error("Unable to check if file exists. Please check permissions and try again.");
+                }
+                if (fileExist === false) {
+                    break;
+                }
+                count++;
+            }
+            const zipResult = await ff.zipFile(links.main, path.join(outputpath, fileNameWD));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
             }
             console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
             returnData = true;
         } else {
-            const zipResult = await ff.zipFile(links.main, path.join(rootPath, 'backup.zip'));
+            let count = 0;
+            let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
+            while (true) {
+                if (count > 0) {
+                    fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
+                }
+                const fileExist = await ff.isFilePath(path.join(outputpath, fileNameWD));
+                if (fileExist === null) {
+                    throw new Error("Unable to check if file exists. Please check permissions and try again.");
+                }
+                if (fileExist === false) {
+                    break;
+                }
+                count++;
+            }
+            const zipResult = await ff.zipFile(links.main, path.join(rootPath, fileNameWD));
             if (!zipResult) {
                 throw new Error(cstyler.bold.red.bold("Could not create zip file. Please check permissions and try again."));
             }
