@@ -6,7 +6,7 @@
 [![npm version](https://img.shields.io/badge/npm-v3.1.4-blue.svg)](https://www.npmjs.com/package/dbbackuper)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Social**
+
 [![Facebook](https://img.shields.io/badge/Facebook-%231877F2.svg?logo=Facebook&logoColor=white)](https://facebook.com/kormoi)
 
 ---
