@@ -113,13 +113,14 @@ import { DBBackuper } from 'dbbackuper';
 
 // Intentionally mixed/spaced config keys that map perfectly inside the engine
 const messyUserConfig = {
-    "db server": "127.0.0.1",
-    "db_user": "root",
-    "SECRET": "super_secure_pass",
-    "target db": "production_warehouse",
-    "work mode": "import_backup",          // Evaluates as Upload Mode
-    "sync strategy": "skip_existing",      // Evaluates as Merge / Keep Old Strategy
-    "folder path": "./backups/july_2026/"
+    "db server": "127.0.0.1",                       // host: "localhost"
+    "db_user": "root",                              // user: "admin_etc"
+    "SECRET": "super_secure_pass",                  // Database passowrd
+    "port": 3306,
+    "target db": "production_warehouse",                // That you want to backup
+    "work mode": "import_backup" || "upload backup" || "download",          // Evaluates as Upload Mode
+    "sync strategy": "skip_existing",      // Best describe in three words clean(delete everything old) or replace(change database setting and replace if primary key exist) or merge(change setting and do not add replace data if exist)
+    "folder path": "./backups/july_2026/" // if uploading file path "./backup/july_2026.zip" must be zip 
 };
 
 const backupEngine = new DBBackuper(messyUserConfig);
