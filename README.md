@@ -3,16 +3,22 @@
 
 `dbbackuper` is a developer-friendly, bulletproof database backup utility designed to safely handle production workflows without strict configuration rigidness. Featuring a highly adaptive, **case-insensitive key/value aliasing engine**, it seamlessly interprets user intent—whether they type shorthand flags, environment variable names, spaced configurations, or custom parameters.
 
-[![npm version](https://img.shields.io/badge/npm-v3.1.4-blue.svg)](https://www.npmjs.com/package/dbtasker)
+[![npm version](https://img.shields.io/badge/npm-v3.1.4-blue.svg)](https://www.npmjs.com/package/dbbackuper)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**Social**
+[![Facebook](https://img.shields.io/badge/Facebook-%231877F2.svg?logo=Facebook&logoColor=white)](https://facebook.com/kormoi)
 
 ---
 
 ## 🚀 Key Features
 
 * **Intelligent Parameter Mapping:** Never break a workflow over a typo. Accepts options like `dbHost`, `db_host`, `server`, or `host` automatically.
+
 * **Flexible Strategy Routing:** Tailor data migration workflows using dynamic conflict resolutions (`clean`, `merge/keep_old`, `replace/keep_new`).
+
 * **Automatic Suffix Evaluation:** Intuitively processes strategy tokens with or without suffixes (`clean`, `cleanbackup`, `clean_backup`).
+
 * **Idempotent & Safe Execution:** Built to handle destructive schema updates or protective backups depending on your specific operation mode.
 
 ---
@@ -43,8 +49,11 @@ Standard Term | Supported Key Variations & Aliases
 
 ### 2. Operation Core (Work Mode & Slates)
 Control how the module initializes actions.
+
 - `workMode` **Key Mapping:** `mode`, `workmode`, `work_mode`, `action`, `operation`, `job`, `task`, `type`, `command`, `direction`, `method`, `strategy`, `process`, `runmode`
+
 - `uploadType` **Key Mapping:** `type`, `uploadtype`, `upload_type`, `strategy`, `syncstrategy`, `sync_strategy`, `policy`, `conflictpolicy`, `conflict_policy`, `behavior`
+
 - `path` **Key Mapping:** `path`, `dir`, `directory`, `folder`, `location`, `destination`, `source`, `target`, `filepath`, `folder_path`, `output_path`, `save_path` (Pure path terms—no backup suffix configuration required)
 
 

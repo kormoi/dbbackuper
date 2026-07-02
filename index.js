@@ -117,7 +117,7 @@ const passwordAliases = [
 const truers = [true, 1, "1", "true", "True", "TRUE"];
 const falsers = [false, 0, "0", "false", "False", "FALSE"];
 
-function getConfigValue(config) {
+async function getConfigValue(config) {
   let data = {};
   for (const key of Object.keys(config)) {
     if (pathAliases.includes(key.toLowerCase())) {
@@ -270,7 +270,7 @@ function getConfigValue(config) {
 
 module.exports = async function (configData) {
   try {
-    const data = getConfigValue(configData);
+    const data = await getConfigValue(configData);
     if (data.successful === false) {
       return data;
     }
