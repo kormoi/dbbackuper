@@ -757,7 +757,7 @@ async function checkRowExists(config, database, table, column, columnValue, colu
         }
     }
 }
-async function uploadData(config, databaseName, tableName, data, schemaLayout = null, type = "replace", updateType = "keep-new") {
+async function uploadData(config, databaseName, tableName, data, schemaLayout = null, type = "replace") {
     try {
         if (schemaLayout === null) {
             return null;
@@ -793,32 +793,32 @@ async function uploadData(config, databaseName, tableName, data, schemaLayout = 
                 if (ifExist === null) {
                     throw new Error("Having problem cheching if row exist or not. Must be a server problem. Please try again.");
                 }
-                if (ifExist) {
-                    priExist = true;
-                }
+                priExist = ifExist;
             }
         }
 
         if (type === "merge") {
-            if (primaryCol === null) {
+            if (primaryCol === null || !priExist) {
                 const addRC = await addRecord(config, databaseName, tableName, validatedData);
                 if (addRC === null) {
                     throw new Error(`Unable to add Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
                 }
                 return true;
-            } else if (updateType === "keep-new") {
+            }
+        } else if (type === "replace") {
+            if (primaryCol === null || !priExist) {
+                const addRC = await addRecord(config, databaseName, tableName, validatedData);
+                if (addRC === null) {
+                    throw new Error(`Unable to add Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
+                }
+                return true;
+            } else {
                 const updateRC = await updateRecord(config, databaseName, tableName, validatedData, primaryCol, schemaLayout);
                 if (updateRC.success === null) {
                     throw new Error(`Unable to update Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
                 }
                 return true;
             }
-        } else if (type === "replace") {
-            const updateRC = await updateRecord(config, databaseName, tableName, validatedData, primaryCol, schemaLayout);
-            if (updateRC.success === null) {
-                throw new Error(`Unable to update Record to ${cstyler.purple("Database:")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table:")} ${cstyler.blue(tableName)}`);
-            }
-            return true;
         } else {
             const addRC = await addRecord(config, databaseName, tableName, validatedData);
             if (addRC === null) {
@@ -831,7 +831,7 @@ async function uploadData(config, databaseName, tableName, data, schemaLayout = 
         return null;
     }
 }
-async function uploadMultiRow(config, databaseName, tableName, data, type = "replace", updateType = "keep-new") {
+async function uploadMultiRow(config, databaseName, tableName, data, type = "replace") {
     let count = 0;
     try {
         const schemaLayout = await getmtd.getTableSchemaLayout(config, databaseName, tableName);
@@ -846,7 +846,7 @@ async function uploadMultiRow(config, databaseName, tableName, data, type = "rep
         }
         while (data.length > 0) {
             const item = data.pop();
-            const upload = await uploadData(config, databaseName, tableName, item, schemaLayout, type, updateType = "keep-new");
+            const upload = await uploadData(config, databaseName, tableName, item, schemaLayout, type);
             if (upload === null) {
                 throw new Error("Unable to upload data to database");
             }
@@ -858,7 +858,7 @@ async function uploadMultiRow(config, databaseName, tableName, data, type = "rep
         return { success: null, count: count }
     }
 }
-async function uploadAllData(config, type = "replace", updateType = "keep-new") {
+async function uploadAllData(config, type = "replace") {
     let offsetData = {}
     try {
         // Lets get folder tree
@@ -912,7 +912,7 @@ async function uploadAllData(config, type = "replace", updateType = "keep-new") 
                         }
                         offsetData[db][table].start = totalRow;
                     }
-                    const addTableRows = await uploadMultiRow(config, db, table, tableData, type, updateType);
+                    const addTableRows = await uploadMultiRow(config, db, table, tableData, type);
                     offsetData[db][table].count = addTableRows.count;
                     if (addTableRows.success !== true) {
                         throw new Error("Unable to upload data to database. Please try again. We may have added few rows. Count as follows:", offsetData);
@@ -920,10 +920,10 @@ async function uploadAllData(config, type = "replace", updateType = "keep-new") 
                 }
             }
         }
-        return true;
+        return { success: true, message: "Successfully uploaded all data to database." };
     } catch (e) {
         console.error("Having problem in backup process. Error message: ", e.message);
-        return null;
+        return { success: null, message: e.message };
     }
 }
 async function clearAllRows(config, databaseName, tableName) {

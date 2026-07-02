@@ -158,7 +158,7 @@ async function fileBackup() {
         return null;
     }
 }
-async function uploadBackup(config, zipPath, type = 'replace', updateType = "keep-new") {
+async function uploadBackup(config, zipPath, type = 'replace') {
     try {
         zipPath = path.resolve(zipPath);
         const isFile = await ff.isfilepathwithext(zipPath, 'zip');
@@ -246,20 +246,20 @@ async function uploadBackup(config, zipPath, type = 'replace', updateType = "kee
                     }
                     const clearRows = await upl.clearAllRows(config, db, table);
                     if (clearRows.success === false) {
-                        return null;
+                        throw new Error("Having problem when clearing rows from table. Please try again.");
                     }
                 }
             }
         }
-        const uploadAllRows = await upl.uploadAllData(config, type, updateType);
-        if (uploadAllRows === null) {
+        const uploadAllRows = await upl.uploadAllData(config, type);
+        if (uploadAllRows.success === null) {
             throw new Error("Having problem uploading row data from backup. Please try again.")
         }
         console.log(cstyler.bold.underline.green("Successfully uploaded all the backup."));
-        return true;
+        return uploadAllRows;
     } catch (err) {
         console.error("Having problem uploading backup. Error message: ", err.message);
-        return null;
+        return { success: null, message: err.message }
     }
 }
 

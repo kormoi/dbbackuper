@@ -38,6 +38,7 @@ async function copyFiles(folderTree, destinationFolder) {
         return null;
     }
 }
+// if database list is empty then it gets checked by metadata giver funciton
 async function createbackup(config, outputpath = null, fullBackup = false, dbs = [], forceDownload = false) {
     try {
         console.log(cstyler.bold("Let's check disk space first to check if we can run the backup or not."));
@@ -89,14 +90,14 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
         if (outputpath) {
             // Lets check folder directory
             const isFolder = await ff.isFolderPath(outputpath);
-            if(isFolder === null){
+            if (isFolder === null) {
                 const folderPath = path.dirname(outputpath);
                 const createFolder = ff.makeDirectory(folderPath);
-                if(createFolder === null){
+                if (createFolder === null) {
                     console.error("Unable to create folder to given path.");
                     outputpath = rootPath;
                 }
-            } else if(isFolder === false){
+            } else if (isFolder === false) {
                 outputpath = path.dirname(outputpath);
             }
             const zipResult = await ff.zipFile(links.main, path.join(outputpath, 'backup.zip'));
@@ -110,7 +111,7 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             if (!zipResult) {
                 throw new Error(cstyler.bold.red.bold("Could not create zip file. Please check permissions and try again."));
             }
-            console.log(cstyler.bold.underline.green("Successfully completed the backup './backupfiles/backup'"));
+            console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
             returnData = true;
         }
         await ff.deletePath(links.main);
