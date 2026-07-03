@@ -58,16 +58,16 @@ const uploadBackupAliases = [
 ];
 const workModeAliases = [ // this one is perfect
   // Base variations
-  "mode", "workmode", "action", "operation", "job", "task", "type", "command", "direction", "method", "strategy", "process", "execution", "intent", "runmode",
+  "mode", "workmode", "action", "operation", "job", "task", "command", "direction", "method", "strategy", "process", "execution", "intent", "runmode",
 
   // Custom formatted combinations
-  "work_mode", "job_type", "action_type", "op_type", "operation_type", "run_mode", "task_type", "cmd_type", "command_type", "exec_mode",
-  "work mode", "job type", "action type", "op type", "operation type", "run mode", "task type", "cmd type", "command type", "exec mode"
+  "work_mode", "exec_mode", "work mode", "run mode", "exec mode", "run_mode",
 ];
 const uploadTypeAliases = [
   // Base variations
   "type", "uploadtype", "strategy", "syncstrategy", "mergestrategy", "policy", "conflictpolicy", "mode", "uploadmode", "action", "behavior",
-
+  "job_type", "action_type", "op_type", "operation_type", "task_type", "cmd_type", "command_type", "job type", "action type",
+  "op type", "operation type", "task type", "cmd type", "command type",
   // Custom formatted combinations
   "upload_type", "sync_strategy", "merge_strategy", "conflict_policy", "upload_mode", "import_type", "import_mode", "import_strategy",
   "upload type", "sync strategy", "merge strategy", "conflict policy", "upload mode", "import type", "import mode", "import strategy"
