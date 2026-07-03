@@ -4,4 +4,6 @@ module.exports = {
     database: "./backupfiles/backup/database",
     databasefiles: "./backupfiles/backup/database/files",
     programfiles: "./backupfiles/backup/programfiles",
+    raw: "./backupfiles/backup/database/raw.json",
+    dbtasker: "./backupfiles/backup/database/dbtaskerdata.json",
 }

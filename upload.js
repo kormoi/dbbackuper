@@ -249,12 +249,16 @@ async function uploadBackup(config, zipPath, type = 'replace') {
         }
         // Let's upload all the rows
         if (type === "clean") {
-            for (const db of Object.keys(dbtaskerdata)) {
-                if (!fncs.isJsonObject(dbtaskerdata[db])) {
+            const readRawData = await ff.readJsonFile(links.raw);
+            if(readRawData === null || !fncs.isJsonObject(readRawData)) {
+                throw new Error("Unable to read raw data from backup. Please try again.");
+            }
+            for (const db of Object.keys(readRawData)) {
+                if (!fncs.isJsonObject(readRawData[db])) {
                     continue;
                 }
-                for (const table of Object.keys(dbtaskerdata[db])) {
-                    if (!fncs.isJsonObject(dbtaskerdata[db][table])) {
+                for (const table of Object.keys(readRawData[db])) {
+                    if (!fncs.isJsonObject(readRawData[db][table])) {
                         continue;
                     }
                     const clearRows = await upl.clearAllRows(config, db, table);
