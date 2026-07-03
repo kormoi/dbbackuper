@@ -103,10 +103,10 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             outputpath = path.dirname(outputpath);
         }
         let count = 0;
-        let fileNameWD = `backup_${fncs.getDateTime("_").date}_by_dbbackuper.zip`;
+        let fileNameWD = `backup_${fncs.getDateTime("_").date}__by_dbbackuper.zip`;
         while (true) {
             if (count > 0) {
-                fileNameWD = `backup_${fncs.getDateTime("_").date}_${count}_by_dbbackuper.zip`;
+                fileNameWD = `backup_${fncs.getDateTime("_").date}__by_dbbackuper_${count}.zip`;
             }
             console.log(path.join(outputpath, fileNameWD))
             const fileExist = await ff.isfilepath(path.join(outputpath, fileNameWD), '.zip');

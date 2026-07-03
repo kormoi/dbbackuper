@@ -684,6 +684,7 @@ async function getTableRowCount(config, database, table) {
         }
     }
 }
+
 module.exports = {
     getMySQLVersion,
     isMySQL578OrAbove,

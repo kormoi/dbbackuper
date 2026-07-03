@@ -1200,19 +1200,90 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
     else if (idx.some(i => i.NON_UNIQUE === 0)) index = "UNIQUE";
     else if (idx.length) index = "KEY";
 
-    return {
+    // 4. Foreign Key relational discovery mapping
+    const [fks] = await connection.execute(
+      `
+      SELECT 
+        kcu.CONSTRAINT_NAME as constraintName,
+        kcu.REFERENCED_TABLE_NAME as referencedTable,
+        kcu.REFERENCED_COLUMN_NAME as referencedColumn,
+        rc.UPDATE_RULE as updateRule,
+        rc.DELETE_RULE as deleteRule
+      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+      JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc 
+        ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME 
+        AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+      WHERE kcu.TABLE_SCHEMA = ?
+        AND kcu.TABLE_NAME = ?
+        AND kcu.COLUMN_NAME = ?
+        AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+      `,
+      [dbName, tableName, columnName]
+    );
+
+    // 5. Build output object profiles dynamically
+    const isNullable = c.IS_NULLABLE === "YES";
+    const isAutoIncrement = c.EXTRA.includes("auto_increment");
+
+    const response = {
       columntype: c.DATA_TYPE.toUpperCase(),
       length_value,
-      unsigned: /unsigned/i.test(c.COLUMN_TYPE),
-      zerofill: /zerofill/i.test(c.COLUMN_TYPE),
-      nulls: c.IS_NULLABLE === "YES",
-      defaults: c.COLUMN_DEFAULT,
-      autoincrement: c.EXTRA.includes("auto_increment"),
-      index,
-      _charset_: c.CHARACTER_SET_NAME,
-      _collate_: c.COLLATION_NAME,
-      comment: c.COLUMN_COMMENT
+      nulls: isNullable
     };
+
+    // Include Foreign Key map traits only if an active baseline relational key is found
+    if (fks.length > 0) {
+      response.foreignKey = {
+        constraint: fks[0].constraintName,
+        referencedTable: fks[0].referencedTable,
+        referencedColumn: fks[0].referencedColumn,
+        onUpdate: fks[0].updateRule,
+        onDelete: fks[0].deleteRule
+      };
+    }
+
+    // Only add charset and collation if they possess a valid string value
+    if (c.CHARACTER_SET_NAME !== null && c.CHARACTER_SET_NAME !== undefined) {
+      response._charset_ = c.CHARACTER_SET_NAME;
+    }
+    if (c.COLLATION_NAME !== null && c.COLLATION_NAME !== undefined) {
+      response._collate_ = c.COLLATION_NAME;
+    }
+
+    // Only add comment if it's not null, undefined, or an empty string
+    if (c.COLUMN_COMMENT !== null && c.COLUMN_COMMENT !== undefined && c.COLUMN_COMMENT !== "") {
+      response.comment = c.COLUMN_COMMENT;
+    }
+
+    // Only inject autoincrement property if it evaluates to true
+    if (isAutoIncrement) {
+      response.autoincrement = true;
+    }
+
+    // --- DEFAULT VALUE RULE ---
+    if (c.COLUMN_DEFAULT !== null && c.COLUMN_DEFAULT !== undefined) {
+      response.defaults = c.COLUMN_DEFAULT;
+    } else if (isNullable) {
+      response.defaults = null;
+    }
+
+    // Strict numerical check evaluation flag
+    const isNumeric = [
+      "tinyint", "smallint", "mediumint", "int", "bigint",
+      "decimal", "float", "double"
+    ].includes(c.DATA_TYPE);
+
+    if (isNumeric) {
+      response.unsigned = /unsigned/i.test(c.COLUMN_TYPE);
+      response.zerofill = /zerofill/i.test(c.COLUMN_TYPE);
+    }
+
+    // Index string evaluation rules: skip if empty string or basic "KEY"
+    if (index && index !== "KEY") {
+      response.index = index;
+    }
+
+    return response;
 
   } catch (err) {
     console.error(err.message);
