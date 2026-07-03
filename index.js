@@ -284,6 +284,7 @@ module.exports = async function (configData) {
       // Lets backup the database
       const backupfile = await dwn.createbackup(data.config, data.path, data.fullBackup, data.dblist, data.forceDownload);
       if (backupfile !== true) {
+        await ff.deletePath(links.main);
         return { successful: false, message: "Unable to create backup. Please try again." }
       } else {
         return { successful: true, message: "Successfully created backup!" }
