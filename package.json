@@ -1,6 +1,6 @@
 {
   "name": "dbbackuper",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "funding": {
     "type": "individual",
     "url": "https://www.patreon.com/cw/kormoi"
@@ -19,7 +19,11 @@
     "dbbackuper",
     "databasebackup",
     "mysqlbackup",
-    "backuptool"
+    "backuptool",
+    "database",
+    "backup",
+    "databasebackup",
+    "mysqlbackup"
   ],
   "license": "ISC",
   "author": "Md Nasiruddin Ahmed",
