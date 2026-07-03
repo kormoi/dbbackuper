@@ -12,15 +12,15 @@ async function getModuleVersion(moduleName, projectPath = process.cwd()) {
     const pkg = JSON.parse(data);
 
     // Look in standard dependencies first, then fallback to devDependencies
-    const versionRaw = 
-      (pkg.dependencies && pkg.dependencies[moduleName]) || 
+    const versionRaw =
+      (pkg.dependencies && pkg.dependencies[moduleName]) ||
       (pkg.devDependencies && pkg.devDependencies[moduleName]);
 
     if (!versionRaw) return null;
 
     // Clean up semantic version prefixes like ^, ~, >=, x, etc.
     return versionRaw.replace(/^[^0-9]*/, '');
-    
+
   } catch (err) {
     console.error(`Failed to read package.json version: ${err.message}`);
     return null;
@@ -1186,7 +1186,18 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
 
     // 2. Parse ENUM / SET / lengths
     let length_value = null;
-    if (["decimal", "float", "double"].includes(c.DATA_TYPE)) {
+
+    // Check for blob, spatial, or json types that shouldn't report a length
+    const isNoLengthType = [
+      "json", "tinyblob", "blob", "mediumblob", "longblob",
+      "geometry", "point", "linestring", "polygon",
+      "multipoint", "multilinestring", "multipolygon",
+      "geometrycollection", "geomcollection"
+    ].includes(c.DATA_TYPE.toLowerCase());
+
+    if (isNoLengthType) {
+      length_value = undefined;
+    } else if (["decimal", "float", "double"].includes(c.DATA_TYPE)) {
       length_value =
         c.NUMERIC_SCALE !== null
           ? [c.NUMERIC_PRECISION, c.NUMERIC_SCALE]
@@ -1247,9 +1258,13 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
 
     const response = {
       columntype: c.DATA_TYPE.toUpperCase(),
-      length_value,
       nulls: isNullable
     };
+
+    // Only append length_value if it isn't explicitly undefined
+    if (length_value !== undefined) {
+      response.length_value = length_value;
+    }
 
     // Include Foreign Key map traits only if an active baseline relational key is found
     if (fks.length > 0) {

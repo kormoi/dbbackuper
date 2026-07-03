@@ -957,4 +957,7 @@ module.exports = {
     uploadData,
     uploadMultiRow,
     clearAllRows,
+    uploadAllData,
+    updateRecord,
+    checkRowExists
 }
