@@ -9,7 +9,6 @@ const getmtd = require("./getmetadata");
 
 
 
-const version = "1.2.7";
 
 const pathAliases = [
   // Base variations
@@ -225,6 +224,9 @@ async function getConfigValue(config) {
         data.workmode = "upload";
       }
     }
+  } else {
+    console.warn("No path provided. We will use the current working directory to download or upload backup file.");
+    return { successful: false, message: "No path provided. Please provide a valid path." };
   }
   // force download
   if (data.forceDownload === undefined || !truers.includes(data.forceDownload)) {
@@ -275,6 +277,7 @@ module.exports = async function (configData) {
     if (data.successful === false) {
       return data;
     }
+    const version = require("./package.json").version;
     console.log(cstyler.bold.green("DBBACKUPER"), cstyler.green(version));
     // lets work on backup operation
     if (data.workmode === "download") {

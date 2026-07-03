@@ -83,9 +83,17 @@ async function validateDBTaskerData(config, data) {
                         } else if (!fncs.isJsonObject(data[db][table][col])) {
                             return false;
                         } else {
-                            for (const item of ['columntype', 'length_value', 'unsigned', 'zerofill', 'nulls', 'defaults', 'autoincrement', 'index', 'comment', '_charset_', '_collate_']) {
-                                if (!Object.hasOwn(data[db][table][col], item)) {
-                                    return false;
+                            for (const item of Object.keys(data[db][table][col])) {
+                                if (!['columntype', 'length_value', 'unsigned', 'zerofill', 'nulls', 'defaults', 'autoincrement', 'index', 'comment', '_charset_', '_collate_'].includes(item)) {
+                                    if (("foreignKey" === item || "foreign_key" === item) && fncs.isJsonObject(data[db][table][col][item])) {
+                                        for (const fkitem of Object.keys(data[db][table][col][item])) {
+                                            if(!["table","column","deleteOption", "updateOption", "constraintName","constraint","referencedTable", "referencedColumn", "onDelete", "onUpdate"].includes(fkitem)) {
+                                                return false;
+                                            }
+                                        }
+                                    } else {
+                                        return false;
+                                    }
                                 }
                                 if (['unsigned', 'zerofill', 'nulls', 'autoincrement'].includes(item) && typeof data[db][table][col][item] !== "boolean") {
                                     return false;
@@ -192,7 +200,7 @@ async function uploadBackup(config, zipPath, type = 'replace') {
         // Lets validate dbtasker data
         const valdcc = await validateDBTaskerData(config, dbtaskerdata);
         if (valdcc !== true) {
-            throw new Error("Please upload a valid file that contains valid database setting file created by 'DBBACKUPER'");
+            throw new Error("Please upload a valid file that contains valid database setting file created by 'DBBACKUPER' package.");
         }
         // Lets validate json row data
         const valJsonRowData = await valcc.validateJsonRowData();

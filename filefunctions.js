@@ -445,7 +445,7 @@ async function unzipFile(zipFilePath, destinationFolderPath) {
             await directory.extract({ path: destFolder });
             // This will now fire perfectly!
 
-            console.log(`Successfully extracted archive to: ${destinationFolderPath}`);
+            console.log(`Successfully extracted archive.`);
             return true;
 
         } catch (error) {

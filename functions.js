@@ -5,7 +5,27 @@ const cstyler = require("cstyler");
 const pg = require('pg');
 
 
+async function getModuleVersion(moduleName, projectPath = process.cwd()) {
+  try {
+    const packageJsonPath = path.join(projectPath, 'package.json');
+    const data = await fs.readFile(packageJsonPath, 'utf8');
+    const pkg = JSON.parse(data);
 
+    // Look in standard dependencies first, then fallback to devDependencies
+    const versionRaw = 
+      (pkg.dependencies && pkg.dependencies[moduleName]) || 
+      (pkg.devDependencies && pkg.devDependencies[moduleName]);
+
+    if (!versionRaw) return null;
+
+    // Clean up semantic version prefixes like ^, ~, >=, x, etc.
+    return versionRaw.replace(/^[^0-9]*/, '');
+    
+  } catch (err) {
+    console.error(`Failed to read package.json version: ${err.message}`);
+    return null;
+  }
+}
 function isNumber(str) {
   if (str === null || str === undefined) {
     return false;
