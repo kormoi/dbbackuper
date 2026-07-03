@@ -87,7 +87,7 @@ async function validateDBTaskerData(config, data) {
                                 if (!['columntype', 'length_value', 'unsigned', 'zerofill', 'nulls', 'defaults', 'autoincrement', 'index', 'comment', '_charset_', '_collate_'].includes(item)) {
                                     if (("foreignKey" === item || "foreign_key" === item) && fncs.isJsonObject(data[db][table][col][item])) {
                                         for (const fkitem of Object.keys(data[db][table][col][item])) {
-                                            if(!["table","column","deleteOption", "updateOption", "constraintName","constraint","referencedTable", "referencedColumn", "onDelete", "onUpdate"].includes(fkitem)) {
+                                            if (!["table", "column", "deleteOption", "updateOption", "constraintName", "constraint", "referencedTable", "referencedColumn", "onDelete", "onUpdate"].includes(fkitem)) {
                                                 return false;
                                             }
                                         }
@@ -250,21 +250,16 @@ async function uploadBackup(config, zipPath, type = 'replace') {
         // Let's upload all the rows
         if (type === "clean") {
             const readRawData = await ff.readJsonFile(links.raw);
-            if(readRawData === null || !fncs.isJsonObject(readRawData)) {
+            if (readRawData === null || !fncs.isJsonObject(readRawData)) {
                 throw new Error("Unable to read raw data from backup. Please try again.");
             }
             for (const db of Object.keys(readRawData)) {
                 if (!fncs.isJsonObject(readRawData[db])) {
                     continue;
                 }
-                for (const table of Object.keys(readRawData[db])) {
-                    if (!fncs.isJsonObject(readRawData[db][table])) {
-                        continue;
-                    }
-                    const clearRows = await upl.clearAllRows(config, db, table);
-                    if (clearRows.success === false) {
-                        throw new Error("Having problem when clearing rows from table. Please try again.");
-                    }
+                const clearRows = await fncs.dropDatabase(config, db);
+                if (clearRows !== true) {
+                    throw new Error("Having problem when clearing database. Please try again.");
                 }
             }
         }
