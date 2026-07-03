@@ -244,7 +244,7 @@ async function uploadBackup(config, zipPath, type = 'replace') {
         dbtaskerconfig.sep = "_";
         // Lets setup database configuration from backup
         const operatedb = await dbtasker(config, dbtaskerdata);
-        if (operatedb !== true) {
+        if (operatedb.success !== true) {
             throw new Error("Unable to setup database. Please try again.");
         }
         // Let's upload all the rows
