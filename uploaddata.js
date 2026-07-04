@@ -505,7 +505,6 @@ async function addRecord(config, databaseName, tableName, validatedData) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         let pool;
         try {
-            console.log(`[Attempt ${attempt}/${maxRetries}] Validated data: `, validatedData);
 
             pool = await mysql.createConnection({
                 ...config,
