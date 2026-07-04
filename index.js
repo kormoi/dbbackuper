@@ -292,7 +292,7 @@ module.exports = async function (configData) {
     } else {
       // Lets upload the backup
       const uploadfile = await upl.uploadBackup(data.config, data.path, data.uploadType);
-      if (uploadfile !== true) {
+      if (uploadfile.success !== true) {
         return { successful: false, message: uploadfile.message }
       }
       return { successful: true, message: uploadfile.message }
