@@ -838,7 +838,7 @@ async function uploadMultiRow(config, databaseName, tableName, data, type = "rep
         if (schemaLayout === null) {
             throw new Error("Having problem getting table schema layout.");
         } else if (schemaLayout === false) {
-            console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.purple(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.purple(tableName)} - it means there is a problem in database setting data. Please upload proper zipped file and try again.`);
+            console.warn(`No table found on ${cstyler.purple("Database")} ${cstyler.blue(databaseName)} ${cstyler.purple("Table Name")} ${cstyler.blue(tableName)} - it means there is a problem in database setting data. Please upload proper zipped file and try again.`);
             return { success: false, count: count };
         }
         if (!Array.isArray(data)) {

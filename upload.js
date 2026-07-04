@@ -242,11 +242,6 @@ async function uploadBackup(config, zipPath, type = 'replace') {
         }
         dbtaskerconfig.forceupdatecolumn = true;
         dbtaskerconfig.sep = "_";
-        // Lets setup database configuration from backup
-        const operatedb = await dbtasker(config, dbtaskerdata);
-        if (operatedb.success !== true) {
-            throw new Error("Unable to setup database. Please try again.");
-        }
         // Let's upload all the rows
         if (type === "clean") {
             const readRawData = await ff.readJsonFile(links.raw);
@@ -262,6 +257,11 @@ async function uploadBackup(config, zipPath, type = 'replace') {
                     throw new Error("Having problem when clearing database. Please try again.");
                 }
             }
+        }
+        // Lets setup database configuration from backup
+        const operatedb = await dbtasker(config, dbtaskerdata);
+        if (operatedb.success !== true) {
+            throw new Error("Unable to setup database. Please try again.");
         }
         const uploadAllRows = await upl.uploadAllData(config, type);
         if (uploadAllRows.success === null) {
