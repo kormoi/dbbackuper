@@ -1165,6 +1165,7 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
         COLUMN_TYPE,
         DATA_TYPE,
         CHARACTER_MAXIMUM_LENGTH,
+        CHARACTER_OCTET_LENGTH,
         NUMERIC_PRECISION,
         NUMERIC_SCALE,
         IS_NULLABLE,
@@ -1189,10 +1190,17 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
 
     // Check for blob, spatial, or json types that shouldn't report a length
     const isNoLengthType = [
+      // 1. Strings & Blobs
       "json", "tinyblob", "blob", "mediumblob", "longblob",
+      "tinytext", "text", "mediumtext", "longtext",
+
+      // 2. Spatial / Geometry Types
       "geometry", "point", "linestring", "polygon",
       "multipoint", "multilinestring", "multipolygon",
-      "geometrycollection", "geomcollection"
+      "geometrycollection", "geomcollection",
+
+      // 3. Date & Time Types
+      "date", "datetime", "timestamp", "time", "year"
     ].includes(c.DATA_TYPE.toLowerCase());
 
     if (isNoLengthType) {
@@ -1203,7 +1211,7 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
           ? [c.NUMERIC_PRECISION, c.NUMERIC_SCALE]
           : c.NUMERIC_PRECISION;
     } else if (["tinyint", "smallint", "mediumint", "int", "bigint"].includes(c.DATA_TYPE)) {
-      length_value = null;
+      length_value = undefined;
     } else if (c.DATA_TYPE === "enum" || c.DATA_TYPE === "set") {
       length_value = c.COLUMN_TYPE
         .slice(c.DATA_TYPE.length + 1, -1)
@@ -1211,6 +1219,8 @@ async function getColumnDetails(config, dbName, tableName, columnName) {
         .map(v => v.trim().replace(/^'(.*)'$/, "$1"));
     } else if (c.CHARACTER_MAXIMUM_LENGTH !== null) {
       length_value = c.CHARACTER_MAXIMUM_LENGTH;
+    } else if (c.CHARACTER_OCTET_LENGTH !== null) {
+      length_value = c.CHARACTER_OCTET_LENGTH;
     }
 
     // 3. Index metadata from STATISTICS
