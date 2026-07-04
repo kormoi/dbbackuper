@@ -84,7 +84,6 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
                 throw new Error("Unable to copy files from directory to zip them.");
             }
         }
-        let returnData = false;
         // If we have an output path, we will zip all the files and move the zip to the output path
         if (!outputpath) {
             outputpath = rootPath;
@@ -121,10 +120,9 @@ async function createbackup(config, outputpath = null, fullBackup = false, dbs =
             throw new Error(cstyler.bold.red("Could not create zip file. Please check permissions and try again."));
         }
         console.log(cstyler.bold.underline.green(`Successfully completed the backup '${outputpath}'`));
-        returnData = true;
 
         await ff.deletePath(links.main);
-        return returnData;
+        return true;
     } catch (err) {
         console.error("Backup creation failed:", err);
         return null;
