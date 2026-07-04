@@ -252,8 +252,8 @@ async function uploadBackup(config, zipPath, type = 'replace') {
                 if (!fncs.isJsonObject(readRawData[db])) {
                     continue;
                 }
-                const clearRows = await fncs.dropDatabase(config, db);
-                if (clearRows !== true || clearRows === false) {
+                const dropDB = await fncs.dropDatabase(config, db);
+                if (dropDB !== true || dropDB !== false) {
                     throw new Error("Having problem when clearing database. Please try again.");
                 }
             }
