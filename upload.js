@@ -268,9 +268,11 @@ async function uploadBackup(config, zipPath, type = 'replace') {
             throw new Error("Having problem uploading row data from backup. Please try again.")
         }
         console.log(cstyler.bold.underline.green("Successfully uploaded all the backup."));
+        await ff.deletePath(links.main);
         return uploadAllRows;
     } catch (err) {
         console.error("Having problem uploading backup. Error message: ", err.message);
+        await ff.deletePath(links.main);
         return { success: null, message: err.message }
     }
 }
