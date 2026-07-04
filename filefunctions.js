@@ -909,6 +909,20 @@ async function saveDataToFile(data, folderPath, fileNameWithoutExt) {
         }
     }
 }
+function getBaseNameWithoutExt(filePath, stripAllExtensions = false) {
+  if (!filePath || typeof filePath !== 'string') return '';
+  
+  const baseName = path.basename(filePath);
+  
+  if (stripAllExtensions) {
+    // Splits at the first dot to strip everything (e.g., "dbbackuper-1.3.7.tgz" -> "dbbackuper-1")
+    const firstDotIndex = baseName.indexOf('.');
+    return firstDotIndex !== -1 ? baseName.substring(0, firstDotIndex) : baseName;
+  }
+  
+  // Standard extraction (e.g., "filefunctions.js" -> "filefunctions")
+  return path.parse(baseName).name;
+}
 /**
  * Reads a file and converts it to Base64 with a RAM safety check.
  */
@@ -998,4 +1012,5 @@ module.exports = {
     fileToBase64,
     fileToBuffer,
     getUniqueFilePath,
+    getBaseNameWithoutExt,
 }

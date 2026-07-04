@@ -71,7 +71,8 @@ function toOriginal(value) {
 
             // 4. Dates
             case 'date': {
-                return new Date(innerValue);
+                const dateValue = new Date(innerValue);
+                return dateValue.toISOString();
             }
 
             // 5. Special Numbers (NaN, Infinity)
@@ -881,7 +882,7 @@ async function uploadAllData(config, type = "replace") {
             if (fileItem.type === "folder" && fileItem.name !== "files") {
                 throw new Error("Unwanted folder found inside backup compressed zip file. File have changed. Please do not use un protected file. Pleae upload file that was backup by DBBACKUPER tool. Please upload a proper file.");
             }
-            if (fileItem.extension !== ".json" || !fncs.isNumber(getBaseNameWithoutExt(fileItem.name))) {
+            if (fileItem.extension !== ".json" || !fncs.isNumber(ff.getBaseNameWithoutExt(fileItem.name))) {
                 throw new Error("We have found differant file name or type than we normally backup using DBBACKUPER. File must be changed. For your security we are abborting. Please upload a right file.");
             }
             // Lets check backedup file now
