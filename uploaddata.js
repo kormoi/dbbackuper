@@ -270,12 +270,18 @@ function validateDefault(columnType, defaultValue, length_value, nullable = fals
 }
 function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
     try {
+        // 1. Guard against null schema layouts
+        if (!schemaLayout || typeof schemaLayout !== 'object') {
+            throw new Error("Invalid schemaLayout configuration object provided.");
+        }
+
+        // 2. Guard against missing/null incoming dataset payloads
+        const dataPayload = rawData || {};
         const cleanData = {};
 
         const SPATIAL_TYPES = ["GEOMETRY", "POINT", "LINESTRING", "POLYGON", "MULTIPOINT", "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION", "GEOMCOLLECTION"];
         const BINARY_TYPES = ["BINARY", "VARBINARY", "BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB"];
 
-        // --- THE COMPLETE PERFECTED RECURSIVE DEEP WKT PARSER ---
         function parseArrayToWkt(arr, targetType) {
             const parsePointNode = (node) => {
                 if (node && typeof node === 'object' && 'x' in node && 'y' in node) {
@@ -287,23 +293,17 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 return null;
             };
 
-            // 1. Core Check: Is it an array of numbers [X, Y]?
             if (arr.length === 2 && typeof arr[0] === 'number' && typeof arr[1] === 'number') {
                 return `POINT(${arr[0]} ${arr[1]})`;
             }
 
-            // 2. Core Check: Is it a flat line array of coordinate objects [{x,y}, {x,y}]?
             if (arr.every(item => item && !Array.isArray(item) && typeof item === 'object' && 'x' in item)) {
                 const pointsStr = arr.map(parsePointNode).filter(Boolean).join(', ');
-                const cleanType = ["GEOMETRY", "GEOMETRYCOLLECTION", "GEOMCOLLECTION"].includes(targetType)
-                    ? "LINESTRING"
-                    : targetType;
+                const cleanType = ["GEOMETRY", "GEOMETRYCOLLECTION", "GEOMCOLLECTION"].includes(targetType) ? "LINESTRING" : targetType;
                 return `${cleanType}(${pointsStr})`;
             }
 
-            // 3. Handle Explicit Multi-Dimensional Layer Compilations
             if (targetType === "MULTIPOLYGON") {
-                // MULTIPOLYGON structure: Array of Polygons -> Array of Rings -> Array of Points
                 const polygons = arr.map(polygon => {
                     const rings = polygon.map(ring => {
                         const pointsStr = ring.map(parsePointNode).filter(Boolean).join(', ');
@@ -315,7 +315,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
             }
 
             if (targetType === "MULTILINESTRING") {
-                // MULTILINESTRING structure: Array of Lines -> Array of Points
                 const lines = arr.map(line => {
                     const pointsStr = line.map(parsePointNode).filter(Boolean).join(', ');
                     return `(${pointsStr})`;
@@ -324,7 +323,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
             }
 
             if (targetType === "POLYGON") {
-                // POLYGON structure: Array of Rings -> Array of Points
                 const rings = arr.map(ring => {
                     const pointsStr = ring.map(parsePointNode).filter(Boolean).join(', ');
                     return `(${pointsStr})`;
@@ -332,7 +330,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 return `POLYGON(${rings})`;
             }
 
-            // 4. Fallback Router for Heterogeneous Data (e.g. GEOMETRYCOLLECTION)
             const elementWKTs = arr.map(element => {
                 if (Array.isArray(element)) {
                     return parseArrayToWkt(element, "GEOMETRYCOLLECTION");
@@ -342,7 +339,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 return null;
             }).filter(Boolean);
 
-            // If it's wrapped internally by sub-parsers, strip redundant top-level labels
             const cleanElements = elementWKTs.map(el => {
                 if (el.startsWith("GEOMETRYCOLLECTION(")) {
                     return el.substring(19, el.length - 1);
@@ -354,16 +350,16 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
         }
 
         for (const colName of Object.keys(schemaLayout)) {
-            const colDef = schemaLayout[colName];
-            const dataType = colDef.type.toUpperCase();
+            const colDef = schemaLayout[colName] || {};
+            const dataType = (colDef.type || "").toUpperCase();
 
             const lengthValue = Array.isArray(colDef.value)
                 ? colDef.value.map(v => `'${v}'`).join(',')
                 : colDef.value;
 
-            let value = rawData[colName];
+            // FIX: Uses the protected dataPayload object cleanly
+            let value = dataPayload[colName];
 
-            // Smart Normalization for Date / Time Types
             if (["TIMESTAMP", "DATETIME"].includes(dataType) && typeof value === 'string' && value !== "CURRENT_TIMESTAMP") {
                 const trimmedDate = value.trim();
                 if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/i.test(trimmedDate)) {
@@ -375,7 +371,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 }
             }
 
-            // Smart Normalization for Binary / BLOB Types
             if (BINARY_TYPES.includes(dataType) && typeof value === 'string') {
                 const trimmedStr = value.trim();
                 if (/^x'[0-9A-Fa-f]+'$/i.test(trimmedStr)) {
@@ -392,7 +387,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 }
             }
 
-            // --- FIXED: ADVANCED SPATIAL DATA PARSING LAYER ---
             let rawWktBody = "";
             let fullWrappedExpression = "";
             let isSpatial = false;
@@ -400,20 +394,18 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
             if (SPATIAL_TYPES.includes(dataType) && value !== undefined && value !== null) {
                 isSpatial = true;
 
-                if (typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) {
+                // FIX: Check that value is truthy before passing to Object.hasOwn
+                if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'value')) {
                     value = value.value;
                 }
 
-                // 1. Intercept Standalone Coordinate Objects (e.g., { x: 0, y: 0 })
                 if (value && typeof value === 'object' && !Array.isArray(value) && 'x' in value && 'y' in value) {
                     const cleanType = (dataType === "GEOMETRY" || dataType === "GEOMCOLLECTION" || dataType === "GEOMETRYCOLLECTION") ? "POINT" : dataType;
                     rawWktBody = `${cleanType}(${value.x} ${value.y})`;
                 }
-                // 2. Fire recursive structural tracker for coordinate arrays
                 else if (Array.isArray(value)) {
                     rawWktBody = parseArrayToWkt(value, dataType);
                 }
-                // 3. Fallback for raw string configurations
                 else if (typeof value === 'string') {
                     let trimmed = value.trim();
                     if (/^ST_GeomFromText\(/i.test(trimmed)) {
@@ -422,7 +414,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                     rawWktBody = trimmed.replace(/^['"](.*)['"]$/, "$1").trim();
                 }
 
-                // Clean out redundant wrapping if the generators already appended the keyword
                 if (/^(POINT|LINESTRING|POLYGON|MULTIPOINT|MULTILINESTRING|MULTIPOLYGON|GEOMETRYCOLLECTION)/i.test(rawWktBody)) {
                     fullWrappedExpression = `ST_GeomFromText('${rawWktBody}')`;
                 } else {
@@ -430,7 +421,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 }
             }
 
-            // Smart Normalization for ENUM and SET types
             if (["ENUM", "SET"].includes(dataType) && Array.isArray(colDef.value) && value !== undefined && value !== null) {
                 const allowedOptions = colDef.value;
                 let incomingItems = [];
@@ -451,14 +441,12 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 value = dataType === "ENUM" ? normalizedItems[0] : normalizedItems.join(",");
             }
 
-            // Check for explicit timestamp generation on INSERT rules
             if (isInsert && value === undefined && ["TIMESTAMP", "DATETIME"].includes(dataType)) {
                 if (colDef.default && typeof colDef.default === 'string' && colDef.default.toUpperCase().includes("CURRENT_TIMESTAMP")) {
                     value = "CURRENT_TIMESTAMP";
                 }
             }
 
-            // Fall back to general defaults if missing on an insertion event
             if (isInsert && value === undefined) {
                 if (colDef.default !== undefined && colDef.default !== null) {
                     value = colDef.default;
@@ -469,7 +457,6 @@ function validatePayloadWithSchema(schemaLayout, rawData, isInsert = true) {
                 }
             }
 
-            // --- DOUBLE CHECK VALIDATION FOR SPATIAL DATA ---
             let validation = { valid: false };
 
             if (isSpatial) {
@@ -859,7 +846,6 @@ async function uploadMultiRow(config, databaseName, tableName, data, type = "rep
     }
 }
 async function uploadAllData(config, type = "replace") {
-    let offsetData = {}
     try {
         // Lets get folder tree
         console.log(cstyler.bold.yellow("Please wait. We are uploading data..."));
@@ -893,7 +879,6 @@ async function uploadAllData(config, type = "replace") {
                 if (!fncs.isJsonObject(readfile[db])) {
                     throw new Error("File must be damaged, deprecated or changed. We are abborting for your security.");
                 }
-                if (!Object.hasOwn(offsetData, db) && type === "merge") offsetData[db] = {};
                 for (const table of Object.keys(readfile[db])) {
                     const tableData = readfile[db][table];
                     if (!Array.isArray(tableData)) {
@@ -904,18 +889,15 @@ async function uploadAllData(config, type = "replace") {
                     } else {
                         continue;
                     }
-                    if (!Object.hasOwn(offsetData[db], table) && type === "merge") offsetData[db][table] = { start: 0, count: 0 };
                     if (type === "merge") {
                         const totalRow = await getmtd.getTableRowCount(config, db, table);
                         if (totalRow === null) {
                             throw new Error(`Having problem getting total row count on Database: ${db} Table: ${table}`);
                         }
-                        offsetData[db][table].start = totalRow;
                     }
                     const addTableRows = await uploadMultiRow(config, db, table, tableData, type);
-                    offsetData[db][table].count = addTableRows.count;
                     if (addTableRows.success !== true) {
-                        throw new Error("Unable to upload data to database. Please try again. We may have added few rows. Count as follows:", offsetData);
+                        throw new Error("Unable to upload data to database. Please try again. We may have added few rows. Please check database and try again.");
                     }
                 }
             }

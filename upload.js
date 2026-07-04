@@ -253,7 +253,7 @@ async function uploadBackup(config, zipPath, type = 'replace') {
                     continue;
                 }
                 const dropDB = await fncs.dropDatabase(config, db);
-                if (dropDB !== true || dropDB !== false) {
+                if (dropDB === null) {
                     throw new Error("Having problem when clearing database. Please try again.");
                 }
             }
