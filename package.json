@@ -7,8 +7,6 @@
   },
   "description": "You can backup your database easily using this module",
   "keywords": [
-    "database",
-    "backup",
     "dbb",
     "dbba",
     "dbbac",
@@ -22,8 +20,11 @@
     "backuptool",
     "database",
     "backup",
-    "databasebackup",
-    "mysqlbackup"
+    "tool",
+    "database backup",
+    "database backup tool",
+    "backupdatabase",
+    "backup database"
   ],
   "license": "ISC",
   "author": "Md Nasiruddin Ahmed",
