@@ -1,3 +1,6 @@
+# Working on PG
+This module would download and install pg or Postgre module. Do not worry. It will take a few kelo byte of space on your drive. It will not disturbe your system until you call pg module and work with it.
+
 # 🗄️ DBBACKUPER
 ### The Ultra-Flexible, Intelligent Database Backup & Synchronization Engine
 
@@ -5,8 +8,7 @@
 
 [![npm version](https://img.shields.io/badge/npm-v3.1.4-blue.svg)](https://www.npmjs.com/package/dbbackuper)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-
+[![MySQL](https://img.shields.io/badge/MySQL-4479A1?style=flat-square&logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![Facebook](https://img.shields.io/badge/Facebook-%231877F2.svg?logo=Facebook&logoColor=white)](https://facebook.com/kormoi)
 
 ---
