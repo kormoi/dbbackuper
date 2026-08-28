@@ -1050,21 +1050,7 @@ function JoinJsonObjects(target = {}, source = {}) {
   return result;
 }
 
-function bypassQuotes(data) {
-  let stringData = "";
 
-  if (typeof data !== "string") {
-    stringData = safeStringify(data);
-  } else {
-    stringData = data;
-  }
-
-  // First unescape any previously escaped quotes and backslashes
-  stringData = stringData.replace(/\\(["'\\])/g, "$1");
-
-  // Now escape all quotes and backslashes
-  return stringData.replace(/(["'\\])/g, "\\$1");
-}
 async function getTableNames(config, databaseName) {
   const dbName = databaseName || config.database;
 
