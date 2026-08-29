@@ -781,7 +781,7 @@ async function subSaveFile(data, filePath = null) {
         if (filePath !== null) {
             folderPath = path.resolve(filePath);
         } else {
-            filePath = "./backupfiles/backup/database/files/";
+            filePath = links.databasefiles;
             folderPath = path.resolve(filePath);
         }
         const fileNameWithoutExt = await ff.getNextFileName(folderPath);
