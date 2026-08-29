@@ -10,17 +10,17 @@ const rows = require("./getrows.js");
 
 
 
-
+// copy all the root files if full backup
 async function copyFiles(folderTree, destinationFolder) {
     try {
         for (const item of Object.keys(folderTree)) {
             const folderContent = folderTree[item];
             if (Object.hasOwn(folderContent, "contents") && fncs.isJsonObject(folderContent.contents)) {
-                const mkdir = await ff.makeDirectory(destinationFolder);
+                const mkdir = await ff.makeDirectory(path.join(destinationFolder, folderContent.name));
                 if (mkdir === null) {
                     throw new Error("Unable to create folder.");
                 }
-                const recurse = await copyFiles(folderContent.contents, destinationFolder);
+                const recurse = await copyFiles(folderContent.contents, path.join(destinationFolder, folderContent.name));
                 if (recurse === null) {
                     return null;
                 }
